@@ -1,68 +1,62 @@
-import { useState } from "react";
-import { supabase } from "../lib/supabaseClient";
+﻿import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-export default function ForgotPassword() {
+export default function Forgotpassword() {
   const [email, setEmail] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
   const navigate = useNavigate();
 
-  const handleSend = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
-    setLoading(true);
-
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-        redirectTo: `${window.location.origin}/reset-password`,
-      });
-
-      if (error) throw error;
-
-      alert("Password reset link sent! Check your email.");
-      navigate("/signin");
-    } catch (err) {
-      alert(err?.message || "Failed to send reset email.");
-    } finally {
-      setLoading(false);
-    }
+    setSubmitted(true);
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 px-6 flex items-center justify-center">
-      <div className="bg-white w-full max-w-md rounded-2xl shadow-xl border p-8">
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-lg border p-8">
         <h1 className="text-2xl font-bold text-gray-900">Forgot Password</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Enter your email and we’ll send a reset link.
+        <p className="text-sm text-gray-600 mt-2">
+          Frontend mode: this page does not send real emails.
         </p>
 
-        <form onSubmit={handleSend} className="mt-6 space-y-4">
-          <div>
-            <label className="text-sm font-medium text-gray-700">Email</label>
-            <input
-              type="email"
-              className="mt-1 w-full border rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
-          </div>
+        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@example.com"
+            required
+            className="w-full border rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none"
+          />
 
           <button
-            disabled={loading}
-            className="w-full rounded-xl bg-blue-600 text-white px-5 py-3 font-semibold hover:bg-blue-700 transition disabled:opacity-60"
+            type="submit"
+            className="w-full bg-blue-600 text-white rounded-lg py-3 font-semibold hover:bg-blue-700 transition"
           >
-            {loading ? "Sending..." : "Send reset link"}
+            Send Reset Link
           </button>
+        </form>
 
+        {submitted && (
+          <div className="mt-4 rounded-lg bg-green-50 border border-green-200 p-3 text-sm text-green-700">
+            Demo request submitted for {email}. Continue to reset page.
+          </div>
+        )}
+
+        <div className="mt-6 flex gap-3">
           <button
-            type="button"
             onClick={() => navigate("/signin")}
-            className="w-full rounded-xl border border-gray-200 bg-white px-5 py-3 font-semibold text-gray-700 hover:bg-gray-50 transition"
+            className="flex-1 border border-gray-300 rounded-lg py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
           >
             Back to Sign In
           </button>
-        </form>
+          <button
+            onClick={() => navigate("/reset-password")}
+            className="flex-1 border border-blue-300 rounded-lg py-2.5 text-sm font-medium text-blue-700 hover:bg-blue-50"
+          >
+            Go to Reset
+          </button>
+        </div>
       </div>
     </div>
   );

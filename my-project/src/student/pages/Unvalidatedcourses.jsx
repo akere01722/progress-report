@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+﻿import { useMemo, useState } from "react";
 import {
   FiAlertTriangle,
   FiCheckCircle,
@@ -6,6 +6,7 @@ import {
   FiBookOpen,
   FiRefreshCcw,
 } from "react-icons/fi";
+import { toast } from "react-toastify";
 
 /**
  * RULES YOU CAN EDIT
@@ -249,9 +250,9 @@ export default function UnvalidatedCourses() {
 
               <button
                 onClick={() => {
-                  // in real app: re-fetch from supabase
+                  // in real app: re-fetch from API
                   // here just a friendly UI button
-                  alert("Refreshing from published results...");
+                  toast.info("Refreshing from published results...");
                 }}
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-blue-700 transition"
               >
@@ -275,7 +276,7 @@ export default function UnvalidatedCourses() {
               >
                 {semesterPublications.map((p) => (
                   <option key={p.publication_id} value={p.publication_id}>
-                    {p.type} • {p.created_at} • {p.publication_id}
+                    {p.type} â€¢ {p.created_at} â€¢ {p.publication_id}
                   </option>
                 ))}
               </select>
@@ -376,15 +377,15 @@ export default function UnvalidatedCourses() {
                               </td>
 
                               <td className="px-5 py-4 text-center font-semibold text-gray-800">
-                                {r.ca ?? <span className="text-gray-400">—</span>}
+                                {r.ca ?? <span className="text-gray-400">â€”</span>}
                               </td>
 
                               <td className="px-5 py-4 text-center font-semibold text-gray-800">
-                                {r.exam ?? <span className="text-gray-400">—</span>}
+                                {r.exam ?? <span className="text-gray-400">â€”</span>}
                               </td>
 
                               <td className="px-5 py-4 text-center font-extrabold text-gray-900">
-                                {r.final ?? <span className="text-gray-400">—</span>}
+                                {r.final ?? <span className="text-gray-400">â€”</span>}
                               </td>
 
                               <td className="px-5 py-4 text-center">{statusChip}</td>
@@ -396,7 +397,7 @@ export default function UnvalidatedCourses() {
                   </div>
 
                   <div className="px-5 py-4 border-t border-gray-100 text-xs text-gray-500">
-                    Pass mark: <span className="font-semibold text-gray-800">{passMark}/100</span> •
+                    Pass mark: <span className="font-semibold text-gray-800">{passMark}/100</span> â€¢
                     CA + Exam = Final Score
                   </div>
                 </div>
@@ -435,3 +436,4 @@ export default function UnvalidatedCourses() {
     </div>
   );
 }
+

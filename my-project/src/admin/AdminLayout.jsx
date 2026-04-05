@@ -6,9 +6,20 @@ import AdminHeader from "./AdminHeader";
 export default function AdminLayout() {
   const [open, setOpen] = useState(false);
   const location = useLocation();
+  const routeTitles = {
+    "/admin": "Dashboard",
+    "/admin/students": "Students",
+    "/admin/teachers": "Teachers",
+    "/admin/subjects": "Subjects",
+    "/admin/attendance": "Attendance",
+    "/admin/reports": "Reports",
+    "/admin/inbox": "Inbox",
+    "/admin/settings": "Settings",
+  };
+  const headerTitle = routeTitles[location.pathname] || "Admin";
 
   return (
-    <div className="flex h-screen">
+    <div className="flex h-screen bg-gray-50">
 
       {/* SIDEBAR */}
       <div>
@@ -16,12 +27,16 @@ export default function AdminLayout() {
       </div>
 
       {/* MAIN CONTENT AREA */}
-      <main className={`flex-1 ml-64 bg-gray-50 min-h-screen p-6 ${location.pathname === "/admin" ? "pt-24" : "pt-6"}`}>
+      <main
+        data-scroll-root
+        className="flex-1 ml-64 h-screen overflow-y-scroll p-6 pt-24"
+      >
 
-        {/* HEADER - Only on Dashboard */}
-        {location.pathname === "/admin" && (
-          <AdminHeader toggleSidebar={() => setOpen(!open)} />
-        )}
+        {/* HEADER - Persistent across all admin pages */}
+        <AdminHeader
+          title={headerTitle}
+          toggleSidebar={() => setOpen(!open)}
+        />
 
         {/* PAGE CONTENT */}
         <div className="mt-4">

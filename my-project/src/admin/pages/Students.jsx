@@ -1,724 +1,920 @@
-import { useEffect, useMemo, useState } from "react";
-import { FiEdit, FiTrash2 } from "react-icons/fi";
-import { supabase } from "../../lib/supabaseClient";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { FiEdit2, FiMail, FiPlus, FiRefreshCw, FiTrash2, FiUser, FiX } from "react-icons/fi";
+import { toast } from "react-toastify";
+import {
+  DEFAULT_SYSTEM_PASSWORD,
+  PROGRAMS,
+  STUDENTS_STORAGE_KEY,
+  generateStudentMatricule,
+  writeArray,
+} from "../../lib/registrationData";
+import { isSupabaseConfigured, supabase } from "../../lib/supabaseClient";
 
-export default function Students() {
-  const [loading, setLoading] = useState(true);
+const ALL_LEVEL_OPTIONS = ["Level 1", "Level 2", "Level 3", "Level 4"];
+const HND_LEVEL_OPTIONS = ["Level 1", "Level 2", "Level 3"];
+const BSC_LEVEL_OPTIONS = ["Level 1", "Level 2", "Level 3", "Level 4"];
 
-  // Lookups
-  const [faculties, setFaculties] = useState([]);
-  const [departments, setDepartments] = useState([]);
-  const [programs, setPrograms] = useState([]);
-  const [levels, setLevels] = useState([]);
+const requiresLevel = (program) => program === "HND" || program === "BSc";
+const isMastersProgram = (program) => program === "Masters I" || program === "Masters II";
 
-  // Filters (UUIDs)
-  const [facultyId, setFacultyId] = useState("");
-  const [departmentId, setDepartmentId] = useState("");
-  const [programId, setProgramId] = useState("");
-  const [levelId, setLevelId] = useState("");
+const getLevelOptionsForProgram = (program) => {
+  if (program === "HND") {
+    return HND_LEVEL_OPTIONS;
+  }
+  if (program === "BSc") {
+    return BSC_LEVEL_OPTIONS;
+  }
+  return [];
+};
 
-  // List
-  const [students, setStudents] = useState([]);
+const defaultForm = {
+  name: "",
+  email: "",
+  facultyId: "",
+  departmentId: "",
+  program: "",
+  level: "",
+};
 
-  // Modals
-  const [showRegisterModal, setShowRegisterModal] = useState(false);
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [selectedStudent, setSelectedStudent] = useState(null);
+const buildDepartmentKey = (facultyId, departmentName) =>
+  `${String(facultyId || "").trim()}::${String(departmentName || "")
+    .trim()
+    .toLowerCase()}`;
 
-  // Create user popup
-  const [creating, setCreating] = useState(false);
-  const [showCredsModal, setShowCredsModal] = useState(false);
-  const [createdCreds, setCreatedCreds] = useState(null);
+const buildLookups = (faculties, departments) => {
+  const facultiesById = new Map(
+    faculties.map((faculty) => [String(faculty.id), { ...faculty, id: String(faculty.id) }])
+  );
+  const facultyIdByName = new Map(
+    faculties.map((faculty) => [String(faculty.name || "").trim().toLowerCase(), String(faculty.id)])
+  );
 
-  // Form
-  const [formName, setFormName] = useState("");
-  const [formEmail, setFormEmail] = useState("");
-  const [formUsername, setFormUsername] = useState("");
+  const departmentsById = new Map(
+    departments.map((department) => [
+      String(department.id),
+      {
+        ...department,
+        id: String(department.id),
+        faculty_id: String(department.faculty_id),
+      },
+    ])
+  );
 
-  const [formMatricule, setFormMatricule] = useState("");
-  const [formBatch, setFormBatch] = useState("2025/2026");
+  const departmentIdByFacultyName = new Map(
+    departments.map((department) => [
+      buildDepartmentKey(department.faculty_id, department.name),
+      String(department.id),
+    ])
+  );
 
-  const [formFacultyId, setFormFacultyId] = useState("");
-  const [formDepartmentId, setFormDepartmentId] = useState("");
-  const [formProgramId, setFormProgramId] = useState("");
-  const [formLevelId, setFormLevelId] = useState("");
-
-  const loadLookups = async () => {
-    const [fRes, dRes, pRes, lRes] = await Promise.all([
-      supabase.from("faculties").select("id,name").order("name"),
-      supabase.from("departments").select("id,name,faculty_id").order("name"),
-      supabase.from("programs").select("id,name,department_id").order("name"),
-      supabase.from("levels").select("id,name").order("name"),
-    ]);
-
-    if (fRes.error) throw fRes.error;
-    if (dRes.error) throw dRes.error;
-    if (pRes.error) throw pRes.error;
-    if (lRes.error) throw lRes.error;
-
-    setFaculties(fRes.data || []);
-    setDepartments(dRes.data || []);
-    setPrograms(pRes.data || []);
-    setLevels(lRes.data || []);
+  return {
+    facultiesById,
+    facultyIdByName,
+    departmentsById,
+    departmentIdByFacultyName,
   };
+};
 
-  const fetchStudents = async () => {
-    try {
-      const { data: studentsData, error: studentsError } = await supabase
-        .from("students")
-        .select("id, profile_id, matricule, batch, status, faculty_id, department_id, program_id, level_id, created_at");
+const mapStudentRow = (row, lookups) => {
+  const facultyNameRaw = String(row?.faculty || "").trim();
+  const departmentNameRaw = String(row?.department || "").trim();
 
-      if (studentsError) {
-        console.error("Students fetch error:", studentsError.message);
-
-        if (studentsError.code === "42703" || studentsError.message.includes("created_at")) {
-          const { data: fallbackData, error: fallbackError } = await supabase
-            .from("students")
-            .select("id, profile_id, matricule, batch, status, faculty_id, department_id, program_id, level_id");
-
-          if (fallbackError) throw fallbackError;
-
-          setStudents(
-            (fallbackData || []).map((row) => ({
-              id: row.id,
-              profile_id: row.profile_id,
-              name: "Unknown",
-              email: "",
-              username: "",
-              matricule: row.matricule || "",
-              batch: row.batch || "",
-              status: row.status || "active",
-              faculty_id: row.faculty_id,
-              department_id: row.department_id,
-              program_id: row.program_id,
-              level_id: row.level_id,
-            }))
-          );
-          return;
-        }
-
-        throw studentsError;
-      }
-
-      const profileIds = [...new Set((studentsData || []).map((s) => s.profile_id).filter(Boolean))];
-
-      let profilesMap = {};
-
-      if (profileIds.length > 0) {
-        const { data: profilesData, error: profilesError } = await supabase
-          .from("profiles")
-          .select("id, full_name, email, username")
-          .in("id", profileIds);
-
-        if (!profilesError && profilesData) {
-          profilesData.forEach((p) => {
-            profilesMap[p.id] = p;
-          });
-        }
-      }
-
-      const studentsWithProfiles = (studentsData || []).map((row) => ({
-        id: row.id,
-        profile_id: row.profile_id,
-        name: profilesMap[row.profile_id]?.full_name || "Unknown",
-        email: profilesMap[row.profile_id]?.email || "",
-        username: profilesMap[row.profile_id]?.username || "",
-        matricule: row.matricule || "",
-        batch: row.batch || "",
-        status: row.status || "active",
-        faculty_id: row.faculty_id,
-        department_id: row.department_id,
-        program_id: row.program_id,
-        level_id: row.level_id,
-        created_at: row.created_at,
-      }));
-
-      studentsWithProfiles.sort((a, b) => {
-        if (!a.created_at) return 1;
-        if (!b.created_at) return -1;
-        return new Date(b.created_at) - new Date(a.created_at);
-      });
-
-      setStudents(studentsWithProfiles);
-    } catch (err) {
-      console.error("fetchStudents error:", err);
-      throw err;
-    }
-  };
-
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      try {
-        await loadLookups();
-        await fetchStudents();
-      } catch (e) {
-        alert(e?.message || "Failed to load students.");
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
-
-  const filteredDepartments = useMemo(() => {
-    if (!facultyId) return [];
-    return departments.filter((d) => d.faculty_id === facultyId);
-  }, [departments, facultyId]);
-
-  const filteredPrograms = useMemo(() => {
-    if (!departmentId) return [];
-    return programs.filter((p) => p.department_id === departmentId);
-  }, [programs, departmentId]);
-
-  const formDepartments = useMemo(() => {
-    if (!formFacultyId) return [];
-    return departments.filter((d) => d.faculty_id === formFacultyId);
-  }, [departments, formFacultyId]);
-
-  const formPrograms = useMemo(() => {
-    if (!formDepartmentId) return [];
-    return programs.filter((p) => p.department_id === formDepartmentId);
-  }, [programs, formDepartmentId]);
-
-  const filteredStudentsList = useMemo(() => {
-    return students.filter((s) => {
-      const f = facultyId ? s.faculty_id === facultyId : true;
-      const d = departmentId ? s.department_id === departmentId : true;
-      const p = programId ? s.program_id === programId : true;
-      const l = levelId ? s.level_id === levelId : true;
-      return f && d && p && l;
-    });
-  }, [students, facultyId, departmentId, programId, levelId]);
-
-  const summary = `Showing ${filteredStudentsList.length} student(s)`;
-
-  const resetForm = () => {
-    setFormName("");
-    setFormEmail("");
-    setFormUsername("");
-    setFormMatricule("");
-    setFormBatch("2025/2026");
-    setFormFacultyId("");
-    setFormDepartmentId("");
-    setFormProgramId("");
-    setFormLevelId("");
-  };
-
-  const handleRegisterSubmit = async (e) => {
-    e.preventDefault();
-    setCreating(true);
-
-    try {
-      const payload = {
-        email: formEmail.trim().toLowerCase(),
-        role: "student",
-        full_name: formName.trim(),
-        username: formUsername.trim() ? formUsername.trim().toLowerCase() : null,
-        matricule: formMatricule.trim(),
-        batch: formBatch.trim(),
-        faculty_id: formFacultyId,
-        department_id: formDepartmentId,
-        program_id: formProgramId,
-        level_id: formLevelId,
-      };
-
-      console.log("Submitting student payload:", payload);
-
-      const { data, error } = await supabase.functions.invoke("create-user", {
-        body: payload,
-      });
-
-      console.log("Function response data:", data);
-      console.log("Function response error:", error);
-
-      if (error) {
-        throw new Error(error.message || "Edge Function returned an error");
-      }
-
-      if (!data?.ok) {
-        throw new Error(data?.error || "Failed to create student");
-      }
-
-      setCreatedCreds({
-        email: data?.email || payload.email,
-        username: data?.username || payload.username || "",
-        tempPassword: data?.tempPassword || null,
-        note: data?.note || "",
-      });
-
-      setShowCredsModal(true);
-      setShowRegisterModal(false);
-      resetForm();
-      await fetchStudents();
-    } catch (err) {
-      console.error("Create student failed:", err);
-      alert(err?.message || "Failed to create student.");
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const handleEditSubmit = async (e) => {
-    e.preventDefault();
-    if (!selectedStudent) return;
-
-    try {
-      setLoading(true);
-
-      const profileUpdate = {
-        full_name: formName.trim(),
-        email: formEmail.trim().toLowerCase(),
-        username: formUsername.trim().toLowerCase() || null,
-      };
-
-      const { error: profileError } = await supabase
-        .from("profiles")
-        .update(profileUpdate)
-        .eq("id", selectedStudent.profile_id);
-
-      if (profileError) throw profileError;
-
-      const studentUpdate = {
-        matricule: formMatricule.trim(),
-        batch: formBatch.trim(),
-        faculty_id: formFacultyId,
-        department_id: formDepartmentId,
-        program_id: formProgramId,
-        level_id: formLevelId,
-      };
-
-      const { error: studentError } = await supabase
-        .from("students")
-        .update(studentUpdate)
-        .eq("id", selectedStudent.id);
-
-      if (studentError) throw studentError;
-
-      alert("Student updated successfully!");
-      setShowEditModal(false);
-      await fetchStudents();
-    } catch (err) {
-      alert(`Update failed: ${err.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (selectedStudent) {
-      setFormName(selectedStudent.name || "");
-      setFormEmail(selectedStudent.email || "");
-      setFormUsername(selectedStudent.username || "");
-      setFormMatricule(selectedStudent.matricule || "");
-      setFormBatch(selectedStudent.batch || "");
-      setFormFacultyId(selectedStudent.faculty_id || "");
-      setFormDepartmentId(selectedStudent.department_id || "");
-      setFormProgramId(selectedStudent.program_id || "");
-      setFormLevelId(selectedStudent.level_id || "");
-    }
-  }, [selectedStudent]);
-
-  const handleDelete = () => {
-    alert("Delete will be wired later safely.");
-    setShowDeleteModal(false);
-  };
-
-  if (loading) {
-    return (
-      <div className="w-full flex items-center justify-center py-12">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto" />
-          <p className="text-sm text-gray-500 mt-4">Loading students...</p>
-        </div>
-      </div>
-    );
+  let facultyId = row?.faculty_id != null ? String(row.faculty_id) : "";
+  if (!facultyId && facultyNameRaw) {
+    facultyId = lookups.facultyIdByName.get(facultyNameRaw.toLowerCase()) || "";
   }
 
+  const facultyFromLookup = facultyId ? lookups.facultiesById.get(facultyId) : null;
+  const facultyName = facultyFromLookup?.name || facultyNameRaw || "Unknown";
+
+  let departmentId = row?.department_id != null ? String(row.department_id) : "";
+  if (!departmentId && facultyId && departmentNameRaw) {
+    departmentId =
+      lookups.departmentIdByFacultyName.get(buildDepartmentKey(facultyId, departmentNameRaw)) ||
+      "";
+  }
+
+  const departmentFromLookup = departmentId ? lookups.departmentsById.get(departmentId) : null;
+  const departmentName = departmentFromLookup?.name || departmentNameRaw || "Unknown";
+
+  return {
+    id: row.id,
+    name: String(row?.full_name ?? row?.name ?? "").trim(),
+    email: String(row?.email ?? "").trim(),
+    matricule: String(row?.matricule ?? ""),
+    facultyId,
+    faculty: facultyName,
+    departmentId,
+    department: departmentName,
+    program: String(row?.program ?? "").trim(),
+    level: String(row?.level ?? "").trim(),
+  };
+};
+
+const shouldFallbackToLegacyPayload = (error) => {
+  const message = String(error?.message || "").toLowerCase();
+  return message.includes("faculty_id") || message.includes("department_id");
+};
+
+function StudentFormModal({
+  open,
+  mode,
+  onClose,
+  onSubmit,
+  form,
+  setForm,
+  faculties,
+  departments,
+  formError,
+  submitting,
+}) {
+  if (!open) return null;
+
+  const needsLevel = requiresLevel(form.program);
+  const levelOptions = getLevelOptionsForProgram(form.program);
+
   return (
-    <div className="w-full">
-      <div className="flex items-center justify-between mb-8">
-        <h1 className="text-3xl font-bold text-gray-800">Students Management</h1>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
 
-        <button
-          onClick={() => {
-            resetForm();
-            setShowRegisterModal(true);
-          }}
-          className="bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-blue-700 transition"
-        >
-          + Register Student
-        </button>
-      </div>
-
-      <div className="bg-white shadow-lg rounded-xl p-6 mb-8">
-        <div className="flex justify-between items-center mb-4">
-          <div className="flex-1 grid grid-cols-1 md:grid-cols-4 gap-4">
-            <select
-              className="border p-3 rounded-lg"
-              value={facultyId}
-              onChange={(e) => {
-                setFacultyId(e.target.value);
-                setDepartmentId("");
-                setProgramId("");
-                setLevelId("");
-              }}
-            >
-              <option value="">Select Faculty</option>
-              {faculties.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name}
-                </option>
-              ))}
-            </select>
-
-            <select
-              className="border p-3 rounded-lg"
-              value={departmentId}
-              onChange={(e) => {
-                setDepartmentId(e.target.value);
-                setProgramId("");
-                setLevelId("");
-              }}
-              disabled={!facultyId}
-            >
-              <option value="">Select Department</option>
-              {filteredDepartments.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
-
-            <select
-              className="border p-3 rounded-lg"
-              value={programId}
-              onChange={(e) => {
-                setProgramId(e.target.value);
-                setLevelId("");
-              }}
-              disabled={!departmentId}
-            >
-              <option value="">Select Program</option>
-              {filteredPrograms.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-
-            <select
-              className="border p-3 rounded-lg"
-              value={levelId}
-              onChange={(e) => setLevelId(e.target.value)}
-              disabled={!programId}
-            >
-              <option value="">Select Level</option>
-              {levels.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <button
-            onClick={fetchStudents}
-            disabled={loading}
-            className="px-4 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50 transition flex items-center gap-2 ml-2"
-            title="Refresh students"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            Refresh
-          </button>
+      <div className="relative w-full max-w-xl overflow-hidden rounded-3xl bg-white shadow-2xl">
+        <div className="bg-gradient-to-r from-blue-700 via-blue-600 to-cyan-500 px-6 py-5 text-white">
+          <p className="text-xl font-bold">
+            {mode === "edit" ? "Edit Student" : "Register Student"}
+          </p>
+          <p className="mt-1 text-sm text-blue-50">
+            Scroll up/down in this form to review all fields before saving.
+          </p>
         </div>
 
-        <p className="text-gray-600 font-medium">{summary}</p>
-      </div>
-
-      <div className="bg-white shadow-lg rounded-xl p-8">
-        <div className="grid grid-cols-[1.2fr_1.8fr_2.2fr_1.2fr_1fr_1fr] gap-6 p-4 border-b border-gray-200 bg-gray-50 text-sm font-semibold text-gray-700 sticky top-0">
-          <span>Matricule</span>
-          <span>Name</span>
-          <span>Email</span>
-          <span>Batch</span>
-          <span>Status</span>
-          <span className="text-center">Actions</span>
-        </div>
-
-        <div className="mt-4 space-y-4">
-          {filteredStudentsList.map((s) => (
-            <div
-              key={s.id}
-              className="grid grid-cols-[1.2fr_1.8fr_2.2fr_1.2fr_1fr_1fr] gap-6 items-center bg-gray-50 hover:bg-gray-100 p-4 rounded-lg transition"
-            >
-              <span className="font-medium">{s.matricule || "—"}</span>
-              <span>{s.name}</span>
-              <span className="block max-w-[320px] truncate text-gray-700">{s.email}</span>
-              <span>{s.batch || "—"}</span>
-
-              <span className="inline-flex w-fit px-3 py-1 rounded-full bg-blue-50 text-blue-700 text-xs font-semibold">
-                {s.status}
-              </span>
-
-              <div className="flex justify-center gap-3">
-                <button
-                  onClick={() => {
-                    setSelectedStudent(s);
-                    setShowEditModal(true);
-                  }}
-                  className="p-2 bg-blue-100 text-blue-600 rounded-lg hover:bg-blue-200 transition"
-                  title="Edit"
-                >
-                  <FiEdit />
-                </button>
-
-                <button
-                  onClick={() => {
-                    setSelectedStudent(s);
-                    setShowDeleteModal(true);
-                  }}
-                  className="p-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition"
-                  title="Delete"
-                >
-                  <FiTrash2 />
-                </button>
-              </div>
-            </div>
-          ))}
-
-          {filteredStudentsList.length === 0 && (
-            <div className="text-center py-10 text-gray-500">
-              No students found for the selected filters.
-            </div>
-          )}
-        </div>
-      </div>
-
-      {showCredsModal && createdCreds && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
-          <div className="bg-white p-6 rounded-lg w-full max-w-md">
-            <h2 className="text-xl font-bold mb-2">Student Account Created ✅</h2>
-            <p className="text-sm text-gray-600 mb-4">
-              Share these login details. If no password is shown, use "Forgot password".
-            </p>
-
-            <div className="bg-gray-50 border rounded-lg p-4 space-y-2 text-sm">
-              <div className="flex justify-between gap-4">
-                <span className="text-gray-500">Email</span>
-                <span className="font-semibold">{createdCreds.email}</span>
-              </div>
-              <div className="flex justify-between gap-4">
-                <span className="text-gray-500">Username</span>
-                <span className="font-semibold">{createdCreds.username || "—"}</span>
-              </div>
-              <div className="flex justify-between gap-4">
-                <span className="text-gray-500">Temp Password</span>
-                <span className="font-semibold">{createdCreds.tempPassword || "—"}</span>
-              </div>
-              {createdCreds.note && (
-                <p className="text-xs text-gray-500 mt-2">{createdCreds.note}</p>
-              )}
-            </div>
-
-            <div className="flex justify-end gap-2 mt-4">
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(
-                    `Email: ${createdCreds.email}\nTemp Password: ${createdCreds.tempPassword || "-"}`
-                  );
-                }}
-                className="px-4 py-2 bg-gray-100 rounded-lg font-semibold"
-              >
-                Copy
-              </button>
-              <button
-                onClick={() => setShowCredsModal(false)}
-                className="px-5 py-2 bg-blue-600 text-white rounded-lg font-semibold"
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showRegisterModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white p-6 rounded-lg w-full max-w-md">
-            <h2 className="text-xl font-bold mb-4">Register Student</h2>
-
-            <form onSubmit={handleRegisterSubmit} className="space-y-3">
+        <div className="max-h-[80vh] overflow-y-auto p-6">
+          <form onSubmit={onSubmit} className="space-y-4">
+            <label className="block text-sm font-semibold text-gray-700">Full Name</label>
+            <div className="relative">
+              <FiUser className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
-                type="text"
-                placeholder="Full Name"
-                value={formName}
-                onChange={(e) => setFormName(e.target.value)}
-                className="border p-2 w-full rounded"
+                value={form.name}
+                onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+                placeholder="Enter full name"
+                className="w-full rounded-xl border border-gray-200 py-3 pl-10 pr-3 outline-none focus:ring-2 focus:ring-blue-500"
                 required
+                disabled={submitting}
               />
+            </div>
+
+            <label className="block text-sm font-semibold text-gray-700">Email</label>
+            <div className="relative">
+              <FiMail className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
                 type="email"
-                placeholder="Email"
-                value={formEmail}
-                onChange={(e) => setFormEmail(e.target.value)}
-                className="border p-2 w-full rounded"
+                value={form.email}
+                onChange={(e) => setForm((prev) => ({ ...prev, email: e.target.value }))}
+                placeholder="student@school.edu"
+                className="w-full rounded-xl border border-gray-200 py-3 pl-10 pr-3 outline-none focus:ring-2 focus:ring-blue-500"
                 required
+                disabled={submitting}
               />
-              <input
-                type="text"
-                placeholder="Username (optional)"
-                value={formUsername}
-                onChange={(e) => setFormUsername(e.target.value)}
-                className="border p-2 w-full rounded"
-              />
-              <input
-                type="text"
-                placeholder="Matricule (e.g. ACC/25/0001)"
-                value={formMatricule}
-                onChange={(e) => setFormMatricule(e.target.value)}
-                className="border p-2 w-full rounded"
-                required
-              />
-              <input
-                type="text"
-                placeholder="Batch (e.g. 2025/2026)"
-                value={formBatch}
-                onChange={(e) => setFormBatch(e.target.value)}
-                className="border p-2 w-full rounded"
-                required
-              />
+            </div>
 
-              <select
-                value={formFacultyId}
-                onChange={(e) => {
-                  setFormFacultyId(e.target.value);
-                  setFormDepartmentId("");
-                  setFormProgramId("");
-                  setFormLevelId("");
-                }}
-                className="border p-2 w-full rounded"
-                required
-              >
-                <option value="">Select Faculty</option>
-                {faculties.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name}
-                  </option>
-                ))}
-              </select>
+            <label className="block text-sm font-semibold text-gray-700">Faculty</label>
+            <select
+              value={form.facultyId}
+              onChange={(e) => {
+                const nextFacultyId = e.target.value;
+                setForm((prev) => {
+                  const nextLevelOptions = getLevelOptionsForProgram(prev.program);
+                  const safeLevel = nextLevelOptions.includes(prev.level) ? prev.level : "";
+                  return {
+                    ...prev,
+                    facultyId: nextFacultyId,
+                    departmentId: "",
+                    level: safeLevel,
+                  };
+                });
+              }}
+              className="w-full rounded-xl border border-gray-200 px-3 py-3 outline-none focus:ring-2 focus:ring-blue-500"
+              required
+              disabled={submitting}
+            >
+              <option value="">Select Faculty</option>
+              {faculties.map((faculty) => (
+                <option key={faculty.id} value={String(faculty.id)}>
+                  {faculty.name}
+                </option>
+              ))}
+            </select>
 
-              <select
-                value={formDepartmentId}
-                onChange={(e) => {
-                  setFormDepartmentId(e.target.value);
-                  setFormProgramId("");
-                  setFormLevelId("");
-                }}
-                className="border p-2 w-full rounded"
-                disabled={!formFacultyId}
-                required
-              >
-                <option value="">Select Department</option>
-                {formDepartments.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
-                  </option>
-                ))}
-              </select>
+            <label className="block text-sm font-semibold text-gray-700">Department</label>
+            <select
+              value={form.departmentId}
+              onChange={(e) => setForm((prev) => ({ ...prev, departmentId: e.target.value }))}
+              className="w-full rounded-xl border border-gray-200 px-3 py-3 outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50"
+              disabled={!form.facultyId || submitting}
+              required
+            >
+              <option value="">Select Department</option>
+              {departments.map((department) => (
+                <option key={department.id} value={String(department.id)}>
+                  {department.name}
+                </option>
+              ))}
+            </select>
 
-              <select
-                value={formProgramId}
-                onChange={(e) => {
-                  setFormProgramId(e.target.value);
-                  setFormLevelId("");
-                }}
-                className="border p-2 w-full rounded"
-                disabled={!formDepartmentId}
-                required
-              >
-                <option value="">Select Program</option>
-                {formPrograms.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
+            <label className="block text-sm font-semibold text-gray-700">Program</label>
+            <select
+              value={form.program}
+              onChange={(e) => {
+                const nextProgram = e.target.value;
+                setForm((prev) => ({
+                  ...prev,
+                  program: nextProgram,
+                  level: getLevelOptionsForProgram(nextProgram).includes(prev.level)
+                    ? prev.level
+                    : "",
+                }));
+              }}
+              className="w-full rounded-xl border border-gray-200 px-3 py-3 outline-none focus:ring-2 focus:ring-blue-500"
+              required
+              disabled={submitting}
+            >
+              <option value="">Select Program</option>
+              {PROGRAMS.map((program) => (
+                <option key={program} value={program}>
+                  {program}
+                </option>
+              ))}
+            </select>
 
-              <select
-                value={formLevelId}
-                onChange={(e) => setFormLevelId(e.target.value)}
-                className="border p-2 w-full rounded"
-                disabled={!formProgramId}
-                required
-              >
-                <option value="">Select Level</option>
-                {levels.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.name}
-                  </option>
-                ))}
-              </select>
-
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowRegisterModal(false)}
-                  className="px-4 py-2 bg-gray-200 rounded"
+            {needsLevel && (
+              <>
+                <label className="block text-sm font-semibold text-gray-700">Level</label>
+                <select
+                  value={form.level}
+                  onChange={(e) => setForm((prev) => ({ ...prev, level: e.target.value }))}
+                  className="w-full rounded-xl border border-gray-200 px-3 py-3 outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                  disabled={submitting}
                 >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={creating}
-                  className="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-60"
-                >
-                  {creating ? "Creating..." : "Register"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+                  <option value="">Select Level</option>
+                  {levelOptions.map((level) => (
+                    <option key={level} value={level}>
+                      {level}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
 
-      {showEditModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white p-6 rounded-lg w-full max-w-md">
-            <h2 className="text-xl font-bold mb-2">Edit Student</h2>
-            <p className="text-sm text-gray-600">
-              Next step: update both <b>profiles</b> and <b>students</b>.
-            </p>
-            <div className="flex justify-end mt-4">
+            <div className="rounded-xl border border-blue-100 bg-blue-50 p-3 text-sm text-blue-800">
+              Matricule is generated by the system. All users login with one system password:{" "}
+              <span className="font-semibold">{DEFAULT_SYSTEM_PASSWORD}</span>
+            </div>
+
+            {formError && <p className="text-sm font-semibold text-red-600">{formError}</p>}
+
+            <div className="flex items-center justify-end gap-2 border-t pt-4">
               <button
-                onClick={() => setShowEditModal(false)}
-                className="px-4 py-2 bg-blue-600 text-white rounded"
+                type="button"
+                onClick={onClose}
+                className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2 font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                disabled={submitting}
               >
-                Close
+                <FiX />
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2 font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+                disabled={submitting}
+              >
+                <FiPlus />
+                {submitting ? "Saving..." : mode === "edit" ? "Save Changes" : "Register Student"}
               </button>
             </div>
-          </div>
+          </form>
         </div>
-      )}
-
-      {showDeleteModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white p-6 rounded-lg w-full max-w-md">
-            <h2 className="text-xl font-bold mb-2">Delete Student</h2>
-            <p className="text-sm text-gray-600">
-              Next step: delete student safely (and optionally disable auth user).
-            </p>
-            <div className="flex justify-end mt-4">
-              <button
-                onClick={() => setShowDeleteModal(false)}
-                className="px-4 py-2 bg-blue-600 text-white rounded"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      </div>
     </div>
   );
+}
+
+function ConfirmDeleteModal({ open, title, message, onCancel, onConfirm, deleting }) {
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50" onClick={onCancel} />
+      <div className="relative w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+        <h3 className="text-lg font-bold text-gray-900">{title}</h3>
+        <p className="mt-2 text-sm text-gray-600">{message}</p>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded-lg border border-gray-300 px-4 py-2 font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+            disabled={deleting}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="rounded-lg bg-red-600 px-4 py-2 font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+            disabled={deleting}
+          >
+            {deleting ? "Deleting..." : "Delete"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function Students() {
+  const [students, setStudents] = useState([]);
+  const [faculties, setFaculties] = useState([]);
+  const [departments, setDepartments] = useState([]);
+
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [formSubmitting, setFormSubmitting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [backendError, setBackendError] = useState("");
+
+  const [query, setQuery] = useState("");
+  const [filters, setFilters] = useState({
+    facultyId: "",
+    departmentId: "",
+    program: "",
+    level: "",
+  });
+
+  const [form, setForm] = useState(defaultForm);
+  const [formError, setFormError] = useState("");
+  const [modalMode, setModalMode] = useState(null);
+  const [editingStudentId, setEditingStudentId] = useState(null);
+  const [studentToDelete, setStudentToDelete] = useState(null);
+  const [lastRegistered, setLastRegistered] = useState(null);
+
+  const fetchStudentsFromBackend = useCallback(async (facultiesData, departmentsData) => {
+    if (!supabase) return [];
+
+    const { data, error } = await supabase
+      .from("students")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+
+    const lookups = buildLookups(facultiesData, departmentsData);
+    return (data || []).map((row) => mapStudentRow(row, lookups));
+  }, []);
+
+  const fetchCatalog = useCallback(async () => {
+    if (!supabase) return { facultiesData: [], departmentsData: [] };
+
+    const [{ data: facultiesData, error: facultiesError }, { data: departmentsData, error: departmentsError }] =
+      await Promise.all([
+        supabase.from("faculties").select("id, name, code").order("name", { ascending: true }),
+        supabase
+          .from("departments")
+          .select("id, faculty_id, name, code")
+          .order("name", { ascending: true }),
+      ]);
+
+    if (facultiesError) throw facultiesError;
+    if (departmentsError) throw departmentsError;
+
+    return {
+      facultiesData: facultiesData || [],
+      departmentsData: departmentsData || [],
+    };
+  }, []);
+
+  const refreshData = useCallback(
+    async (withFullLoader = true) => {
+      if (!isSupabaseConfigured || !supabase) {
+        setBackendError(
+          "Supabase is not configured. Check VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY."
+        );
+        setInitialLoading(false);
+        return;
+      }
+
+      if (withFullLoader) setInitialLoading(true);
+      else setRefreshing(true);
+
+      try {
+        const { facultiesData, departmentsData } = await fetchCatalog();
+
+        const studentsData = await fetchStudentsFromBackend(facultiesData, departmentsData);
+
+        setFaculties(facultiesData);
+        setDepartments(departmentsData);
+        setStudents(studentsData);
+        if (facultiesData.length === 0) {
+          setBackendError(
+            "No faculties found in backend. Seed faculties/departments in Supabase SQL Editor."
+          );
+        } else {
+          setBackendError("");
+        }
+      } catch (error) {
+        const message = error?.message || "Could not load students from backend.";
+        setBackendError(message);
+      } finally {
+        setInitialLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [fetchCatalog, fetchStudentsFromBackend]
+  );
+
+  useEffect(() => {
+    refreshData(true);
+  }, [refreshData]);
+
+  useEffect(() => {
+    const cacheRows = students.map((student) => ({
+      id: student.id,
+      name: student.name,
+      email: student.email,
+      matricule: student.matricule,
+      faculty: student.faculty,
+      department: student.department,
+      program: student.program,
+      level: student.level,
+    }));
+
+    writeArray(STUDENTS_STORAGE_KEY, cacheRows);
+  }, [students]);
+
+  const formDepartments = useMemo(
+    () =>
+      form.facultyId
+        ? departments.filter((department) => String(department.faculty_id) === String(form.facultyId))
+        : [],
+    [form.facultyId, departments]
+  );
+
+  const filterDepartments = useMemo(
+    () =>
+      filters.facultyId
+        ? departments.filter(
+            (department) => String(department.faculty_id) === String(filters.facultyId)
+          )
+        : [],
+    [filters.facultyId, departments]
+  );
+
+  const filteredStudents = useMemo(() => {
+    const q = query.trim().toLowerCase();
+
+    return students.filter((student) => {
+      const searchMatch = !q
+        ? true
+        : [
+            student.name,
+            student.matricule,
+            student.faculty,
+            student.department,
+            student.program,
+            student.level,
+          ]
+            .join(" ")
+            .toLowerCase()
+            .includes(q);
+
+      const facultyMatch = filters.facultyId
+        ? String(student.facultyId) === String(filters.facultyId)
+        : true;
+      const departmentMatch = filters.departmentId
+        ? String(student.departmentId) === String(filters.departmentId)
+        : true;
+      const programMatch = filters.program ? student.program === filters.program : true;
+      const levelMatch = filters.level ? student.level === filters.level : true;
+
+      return searchMatch && facultyMatch && departmentMatch && programMatch && levelMatch;
+    });
+  }, [students, query, filters]);
+
+  const showLevelFilter = !isMastersProgram(filters.program);
+  const filterLevelOptions = useMemo(() => {
+    if (!filters.program) return ALL_LEVEL_OPTIONS;
+    return getLevelOptionsForProgram(filters.program);
+  }, [filters.program]);
+
+  const openRegister = () => {
+    setForm(defaultForm);
+    setFormError("");
+    setEditingStudentId(null);
+    setModalMode("register");
+  };
+
+  const openEdit = (student) => {
+    setForm({
+      name: student.name,
+      email: student.email,
+      facultyId: student.facultyId ? String(student.facultyId) : "",
+      departmentId: student.departmentId ? String(student.departmentId) : "",
+      program: student.program,
+      level: student.level || "",
+    });
+    setFormError("");
+    setEditingStudentId(student.id);
+    setModalMode("edit");
+  };
+
+  const closeModal = () => {
+    setModalMode(null);
+    setEditingStudentId(null);
+    setFormError("");
+  };
+
+  const saveStudent = async (e) => {
+    e.preventDefault();
+
+    if (!isSupabaseConfigured || !supabase) {
+      setFormError("Supabase is not configured.");
+      return;
+    }
+
+    const email = form.email.trim().toLowerCase();
+    const needsLevel = requiresLevel(form.program);
+    const allowedLevelOptions = getLevelOptionsForProgram(form.program);
+
+    if (
+      !form.name.trim() ||
+      !email ||
+      !form.facultyId ||
+      !form.departmentId ||
+      !form.program ||
+      (needsLevel && !form.level)
+    ) {
+      setFormError("Please fill all required fields.");
+      return;
+    }
+
+    if (needsLevel && !allowedLevelOptions.includes(form.level)) {
+      setFormError("Selected level does not match the faculty/program rules.");
+      return;
+    }
+
+    const facultyId = Number(form.facultyId);
+    const departmentId = Number(form.departmentId);
+    const selectedFaculty = faculties.find((faculty) => String(faculty.id) === String(form.facultyId));
+    const selectedDepartment = departments.find(
+      (department) => String(department.id) === String(form.departmentId)
+    );
+
+    if (!Number.isFinite(facultyId) || !Number.isFinite(departmentId)) {
+      setFormError("Please select valid faculty and department.");
+      return;
+    }
+
+    if (
+      !selectedFaculty ||
+      !selectedDepartment ||
+      String(selectedDepartment.faculty_id) !== String(form.facultyId)
+    ) {
+      setFormError("Selected department does not belong to the selected faculty.");
+      return;
+    }
+
+    const emailExists = students.some(
+      (student) =>
+        String(student.email).toLowerCase() === email && String(student.id) !== String(editingStudentId)
+    );
+
+    if (emailExists) {
+      setFormError("That email is already used by another student.");
+      return;
+    }
+
+    setFormSubmitting(true);
+    setFormError("");
+
+    try {
+      const normalizedPayload = {
+        full_name: form.name.trim(),
+        email,
+        faculty_id: facultyId,
+        department_id: departmentId,
+        program: form.program,
+        level: needsLevel ? form.level : null,
+      };
+
+      const legacyPayload = {
+        full_name: form.name.trim(),
+        email,
+        faculty: selectedFaculty.name,
+        department: selectedDepartment.name,
+        program: form.program,
+        level: needsLevel ? form.level : null,
+      };
+
+      if (modalMode === "edit" && editingStudentId) {
+        const { error: normalizedError } = await supabase
+          .from("students")
+          .update(normalizedPayload)
+          .eq("id", editingStudentId);
+
+        if (normalizedError) {
+          if (shouldFallbackToLegacyPayload(normalizedError)) {
+            const { error: legacyError } = await supabase
+              .from("students")
+              .update(legacyPayload)
+              .eq("id", editingStudentId);
+            if (legacyError) throw legacyError;
+          } else {
+            throw normalizedError;
+          }
+        }
+
+        await refreshData(false);
+        toast.success("Student updated successfully.");
+        closeModal();
+        return;
+      }
+
+      const departmentCode = String(selectedDepartment.code || "").trim().toUpperCase();
+      const matricule = generateStudentMatricule(students, departmentCode);
+      const { error: normalizedError } = await supabase
+        .from("students")
+        .insert([{ ...normalizedPayload, matricule }]);
+
+      if (normalizedError) {
+        if (shouldFallbackToLegacyPayload(normalizedError)) {
+          const { error: legacyError } = await supabase
+            .from("students")
+            .insert([{ ...legacyPayload, matricule }]);
+          if (legacyError) throw legacyError;
+        } else {
+          throw normalizedError;
+        }
+      }
+
+      await refreshData(false);
+      setLastRegistered({
+        name: form.name.trim(),
+        matricule,
+        level: needsLevel ? form.level : "N/A",
+      });
+      toast.success("Student registered successfully.");
+      closeModal();
+    } catch (error) {
+      const message = error?.message || "Could not save student.";
+      setFormError(message);
+      toast.error(message);
+    } finally {
+      setFormSubmitting(false);
+    }
+  };
+
+  const confirmDeleteStudent = async () => {
+    if (!studentToDelete || !supabase) return;
+
+    setDeleting(true);
+    try {
+      const { error } = await supabase.from("students").delete().eq("id", studentToDelete.id);
+      if (error) throw error;
+
+      await refreshData(false);
+      toast.success("Student deleted.");
+      setStudentToDelete(null);
+    } catch (error) {
+      const message = error?.message || "Could not delete student.";
+      toast.error(message);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="overflow-hidden rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-600 to-cyan-500 p-6 text-white shadow-lg">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-2xl font-bold">Student Registration</h2>
+            <p className="mt-1 text-sm text-blue-50">
+              Register and manage students by class using level/program/faculty filters.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => refreshData(false)}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/40 bg-white/10 px-4 py-2 font-semibold text-white hover:bg-white/20 disabled:opacity-60"
+              disabled={refreshing || initialLoading}
+            >
+              <FiRefreshCw className={refreshing ? "animate-spin" : ""} />
+              Refresh
+            </button>
+
+            <button
+              onClick={openRegister}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-4 py-2 font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-60"
+              disabled={initialLoading}
+            >
+              <FiPlus />
+              Register Student
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {backendError && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-medium text-red-700">
+          {backendError}
+        </div>
+      )}
+
+      {lastRegistered && (
+        <div className="rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800">
+          Student registered: <span className="font-semibold">{lastRegistered.name}</span> |
+          Matricule: <span className="font-semibold"> {lastRegistered.matricule}</span> | Level:
+          <span className="font-semibold"> {lastRegistered.level}</span>
+        </div>
+      )}
+
+      <div className="rounded-xl border border-gray-200 bg-white p-5">
+        <h3 className="text-lg font-semibold text-gray-900">Filter Students By Class</h3>
+        <div className="mt-4 grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search name/matricule"
+            className="rounded-lg border px-3 py-2 xl:col-span-2"
+          />
+
+          <select
+            value={filters.facultyId}
+            onChange={(e) => {
+              const nextFacultyId = e.target.value;
+              setFilters((prev) => {
+                const nextLevelOptions = prev.program
+                  ? getLevelOptionsForProgram(prev.program)
+                  : ALL_LEVEL_OPTIONS;
+                return {
+                  ...prev,
+                  facultyId: nextFacultyId,
+                  departmentId: "",
+                  level: nextLevelOptions.includes(prev.level) ? prev.level : "",
+                };
+              });
+            }}
+            className="rounded-lg border px-3 py-2"
+          >
+            <option value="">All Faculties</option>
+            {faculties.map((faculty) => (
+              <option key={faculty.id} value={String(faculty.id)}>
+                {faculty.name}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={filters.departmentId}
+            onChange={(e) => setFilters((prev) => ({ ...prev, departmentId: e.target.value }))}
+            className="rounded-lg border px-3 py-2 disabled:bg-gray-50"
+            disabled={!filters.facultyId}
+          >
+            <option value="">All Departments</option>
+            {filterDepartments.map((department) => (
+              <option key={department.id} value={String(department.id)}>
+                {department.name}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={filters.program}
+            onChange={(e) => {
+              const nextProgram = e.target.value;
+              setFilters((prev) => ({
+                ...prev,
+                program: nextProgram,
+                level: isMastersProgram(nextProgram)
+                  ? ""
+                  : getLevelOptionsForProgram(nextProgram).includes(prev.level)
+                    ? prev.level
+                    : "",
+              }));
+            }}
+            className="rounded-lg border px-3 py-2"
+          >
+            <option value="">All Programs</option>
+            {PROGRAMS.map((program) => (
+              <option key={program} value={program}>
+                {program}
+              </option>
+            ))}
+          </select>
+
+          {showLevelFilter && (
+            <select
+              value={filters.level}
+              onChange={(e) => setFilters((prev) => ({ ...prev, level: e.target.value }))}
+              className="rounded-lg border px-3 py-2"
+            >
+              <option value="">All Levels</option>
+              {filterLevelOptions.map((level) => (
+                <option key={level} value={level}>
+                  {level}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        <p className="mt-3 text-sm text-gray-600">
+          Showing <span className="font-semibold">{filteredStudents.length}</span> of{" "}
+          <span className="font-semibold">{students.length}</span> students.
+        </p>
+      </div>
+
+      <div className="rounded-xl border border-gray-200 bg-white p-5">
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="border-b text-left">
+                <th className="py-2 pr-3">Name</th>
+                <th className="py-2 pr-3">Matricule</th>
+                <th className="py-2 pr-3">Faculty</th>
+                <th className="py-2 pr-3">Department</th>
+                <th className="py-2 pr-3">Program</th>
+                <th className="py-2 pr-3">Level</th>
+                <th className="py-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredStudents.map((student) => (
+                <tr key={student.id} className="border-b last:border-b-0">
+                  <td className="py-2 pr-3">{student.name}</td>
+                  <td className="py-2 pr-3 font-semibold">{student.matricule}</td>
+                  <td className="py-2 pr-3">{student.faculty}</td>
+                  <td className="py-2 pr-3">{student.department}</td>
+                  <td className="py-2 pr-3">{student.program}</td>
+                  <td className="py-2 pr-3">{student.level || "N/A"}</td>
+                  <td className="py-2">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => openEdit(student)}
+                        className="rounded-lg border border-blue-200 bg-blue-50 p-2 text-blue-700 hover:bg-blue-100"
+                        title="Edit Student"
+                        disabled={initialLoading || refreshing}
+                      >
+                        <FiEdit2 />
+                      </button>
+                      <button
+                        onClick={() => setStudentToDelete(student)}
+                        className="rounded-lg border border-red-200 bg-red-50 p-2 text-red-700 hover:bg-red-100"
+                        title="Delete Student"
+                        disabled={initialLoading || refreshing}
+                      >
+                        <FiTrash2 />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {initialLoading && (
+          <p className="mt-3 text-sm text-gray-600">Loading students from backend...</p>
+        )}
+
+        {!initialLoading && filteredStudents.length === 0 && (
+          <p className="mt-3 text-sm text-gray-600">No students found.</p>
+        )}
+      </div>
+
+      <StudentFormModal
+        open={Boolean(modalMode)}
+        mode={modalMode}
+        onClose={closeModal}
+        onSubmit={saveStudent}
+        form={form}
+        setForm={setForm}
+        faculties={faculties}
+        departments={formDepartments}
+        formError={formError}
+        submitting={formSubmitting}
+      />
+
+      <ConfirmDeleteModal
+        open={Boolean(studentToDelete)}
+        title="Delete Student"
+        message={
+          studentToDelete
+            ? `Are you sure you want to delete ${studentToDelete.name}? This action cannot be undone.`
+            : ""
+        }
+        onCancel={() => setStudentToDelete(null)}
+        onConfirm={confirmDeleteStudent}
+        deleting={deleting}
+      />
+    </div>
+  );
+}

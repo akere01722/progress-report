@@ -1,90 +1,239 @@
-import { useState, useEffect } from "react";
-import { supabase } from "../../lib/supabaseClient";
+import { useEffect, useMemo, useState } from "react";
+import { FiDownload } from "react-icons/fi";
+import { toast } from "react-toastify";
+import {
+  fetchPublishedPeriodsForFaculty,
+  fetchStudentPublishedResults,
+} from "../../lib/resultsBackendWorkflow";
+import { printTableToPdf } from "../../lib/pdfExport";
+
+const readUserData = () => {
+  try {
+    const raw = localStorage.getItem("userData");
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+};
+
+const buildPeriodKey = (period) => `${period.academicYear}__${period.semester}`;
 
 export default function Results() {
-  const [view, setView] = useState("CA");
-  const [results, setResults] = useState([]);
+  const userData = useMemo(() => readUserData(), []);
+  const faculty = userData?.faculty || "";
+  const facultyId = userData?.facultyId || userData?.faculty_id || "";
+  const matricule = userData?.matricule || "";
+  const studentId = userData?.id || "";
+  const studentName = userData?.name || "Student";
+
+  const [publishedPeriods, setPublishedPeriods] = useState([]);
+  const [selectedPeriodKey, setSelectedPeriodKey] = useState("");
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadingRows, setLoadingRows] = useState(false);
 
   useEffect(() => {
-    const fetchResults = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        // Fetch CA and exam data
-        const [caData, examData] = await Promise.all([
-          supabase
-            .from("ca_reports")
-            .select("course_title, score, max_score")
-            .eq("student_id", user.id),
-          supabase
-            .from("exam_reports")
-            .select("course_title, score, max_score")
-            .eq("student_id", user.id)
-        ]);
+    let active = true;
 
-        if (caData.data && examData.data) {
-          // Combine CA and exam results
-          const combinedResults = caData.data.map(ca => {
-            const exam = examData.data.find(e => e.course_title === ca.course_title);
-            const caScore = ca.score || 0;
-            const examScore = exam?.score || 0;
-            const total = caScore + examScore;
-            const maxTotal = (ca.max_score || 0) + (exam?.max_score || 0);
-            const percentage = maxTotal > 0 ? (total / maxTotal) * 100 : 0;
-            const remark = percentage >= 50 ? "Pass" : "Fail";
-
-            return {
-              subject: ca.course_title,
-              ca: caScore,
-              exam: examScore,
-              total: total,
-              maxTotal: maxTotal,
-              remark: remark
-            };
-          });
-
-          setResults(combinedResults);
-        }
+    const loadPeriods = async () => {
+      setLoading(true);
+      try {
+        const periods = await fetchPublishedPeriodsForFaculty({ faculty, facultyId });
+        if (!active) return;
+        setPublishedPeriods(Array.isArray(periods) ? periods : []);
+      } catch (error) {
+        if (!active) return;
+        setPublishedPeriods([]);
+        toast.error(error?.message || "Failed to load published periods.");
+      } finally {
+        if (active) setLoading(false);
       }
     };
 
-    fetchResults();
-  }, []);
+    void loadPeriods();
+    return () => {
+      active = false;
+    };
+  }, [faculty, facultyId]);
+
+  const periodKeys = publishedPeriods.map((period) => buildPeriodKey(period));
+  const activePeriodKey = periodKeys.includes(selectedPeriodKey)
+    ? selectedPeriodKey
+    : periodKeys[0] || "";
+
+  const selectedPeriod = useMemo(
+    () => publishedPeriods.find((period) => buildPeriodKey(period) === activePeriodKey) || null,
+    [publishedPeriods, activePeriodKey]
+  );
+
+  useEffect(() => {
+    let active = true;
+
+    const loadRows = async () => {
+      if (!selectedPeriod) {
+        if (active) setRows([]);
+        return;
+      }
+
+      setLoadingRows(true);
+      try {
+        const resultPack = await fetchStudentPublishedResults({
+          faculty,
+          facultyId,
+          matricule,
+          studentId,
+          academicYear: selectedPeriod.academicYear,
+          semester: selectedPeriod.semester,
+        });
+        if (!active) return;
+        setRows(Array.isArray(resultPack?.rows) ? resultPack.rows : []);
+      } catch (error) {
+        if (!active) return;
+        setRows([]);
+        toast.error(error?.message || "Failed to load result rows.");
+      } finally {
+        if (active) setLoadingRows(false);
+      }
+    };
+
+    void loadRows();
+    return () => {
+      active = false;
+    };
+  }, [selectedPeriod, faculty, facultyId, matricule, studentId]);
+
+  const average = rows.length
+    ? Math.round(rows.reduce((acc, row) => acc + (row.total || 0), 0) / rows.length)
+    : 0;
+  const passed = rows.filter((row) => (row.total || 0) >= 50).length;
+
+  const handleDownloadPdf = () => {
+    if (!selectedPeriod) {
+      toast.error("Select year and semester first.");
+      return;
+    }
+
+    const ok = printTableToPdf({
+      title: "Student Result Summary",
+      subtitle: `${studentName} (${matricule}) | ${faculty} | ${selectedPeriod.academicYear} ${selectedPeriod.semester}`,
+      columns: [
+        { key: "subject", label: "Course" },
+        { key: "className", label: "Class" },
+        { key: "ca", label: "CA/30" },
+        { key: "exam", label: "Exam/70" },
+        { key: "total", label: "Final/100" },
+        { key: "grade", label: "Grade" },
+        { key: "remark", label: "Remark" },
+      ],
+      rows: rows.map((row) => ({
+        ...row,
+        ca: row.ca ?? "-",
+        exam: row.exam ?? "-",
+        total: row.total ?? "-",
+      })),
+    });
+
+    if (!ok) {
+      toast.error("Allow popups to download PDF.");
+      return;
+    }
+
+    toast.success("Print dialog opened. Save as PDF.");
+  };
 
   return (
-    <>
-      <h1 className="text-2xl font-bold mb-6">Results</h1>
+    <div className="space-y-6">
+      <div className="overflow-hidden rounded-2xl border border-blue-100 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Result Summary</h1>
+            <p className="mt-1 text-sm text-gray-500">
+              View your final results by academic year and semester.
+            </p>
+          </div>
 
-      <select
-        value={view}
-        onChange={(e) => setView(e.target.value)}
-        className="border p-3 rounded-lg mb-6"
-      >
-        <option value="CA">Continuous Assessment (CA)</option>
-        <option value="EXAM">Exam Results</option>
-      </select>
+          <div className="flex gap-2">
+            <select
+              value={activePeriodKey}
+              onChange={(e) => setSelectedPeriodKey(e.target.value)}
+              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 outline-none"
+            >
+              {publishedPeriods.length === 0 && <option value="">No Published Period</option>}
+              {publishedPeriods.map((period) => (
+                <option key={buildPeriodKey(period)} value={buildPeriodKey(period)}>
+                  {period.academicYear} | {period.semester}
+                </option>
+              ))}
+            </select>
 
-      <div className="bg-white rounded-xl shadow p-6 overflow-x-auto">
-        <table className="w-full text-left">
-          <thead className="border-b">
-            <tr>
-              <th>Subject</th>
-              <th>{view === "CA" ? "CA Score" : "Exam Score"}</th>
-              <th>Total</th>
-              <th>Remark</th>
+            <button
+              type="button"
+              onClick={handleDownloadPdf}
+              disabled={!selectedPeriod || rows.length === 0}
+              className="inline-flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+            >
+              <FiDownload />
+              Download PDF
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
+          <p className="text-xs text-gray-500">Courses</p>
+          <p className="mt-1 text-2xl font-bold text-gray-900">{rows.length}</p>
+        </div>
+        <div className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
+          <p className="text-xs text-gray-500">Average Score</p>
+          <p className="mt-1 text-2xl font-bold text-gray-900">{average}%</p>
+        </div>
+        <div className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
+          <p className="text-xs text-gray-500">Passed Courses</p>
+          <p className="mt-1 text-2xl font-bold text-gray-900">{passed}</p>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="border-b text-left">
+              <th className="py-2 pr-3">Course</th>
+              <th className="py-2 pr-3">Class</th>
+              <th className="py-2 pr-3">CA (30)</th>
+              <th className="py-2 pr-3">Exam (70)</th>
+              <th className="py-2 pr-3">Final (100)</th>
+              <th className="py-2 pr-3">Grade</th>
+              <th className="py-2">Remark</th>
             </tr>
           </thead>
           <tbody>
-            {results.map((r, i) => (
-              <tr key={i} className="border-b last:border-0">
-                <td>{r.subject}</td>
-                <td>{view === "CA" ? r.ca : r.exam}</td>
-                <td>{r.total}</td>
-                <td>{r.remark}</td>
+            {rows.map((row) => (
+              <tr key={`${row.subject}-${row.className}`} className="border-b last:border-b-0">
+                <td className="py-2 pr-3">{row.subject}</td>
+                <td className="py-2 pr-3">{row.className}</td>
+                <td className="py-2 pr-3">{row.ca ?? "-"}</td>
+                <td className="py-2 pr-3">{row.exam ?? "-"}</td>
+                <td className="py-2 pr-3 font-semibold">{row.total ?? "-"}</td>
+                <td className="py-2 pr-3">{row.grade || "-"}</td>
+                <td className="py-2">{row.remark || "-"}</td>
               </tr>
             ))}
           </tbody>
         </table>
+
+        {(loading || loadingRows) && (
+          <p className="pt-4 text-sm text-gray-500">Loading published results...</p>
+        )}
+
+        {!loading && !loadingRows && rows.length === 0 && (
+          <p className="pt-4 text-sm text-gray-500">
+            {publishedPeriods.length === 0
+              ? "No result is published yet for your faculty."
+              : "No result row found for your account in this period."}
+          </p>
+        )}
       </div>
-    </>
+    </div>
   );
 }

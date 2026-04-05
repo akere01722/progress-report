@@ -16,6 +16,14 @@ export default function TeacherSidebar() {
   const location = useLocation();
   const [resultOpen, setResultOpen] = useState(location.pathname.includes("/teacher/results"));
 
+  const handleLogout = () => {
+    localStorage.removeItem("userData");
+    localStorage.removeItem("teacherToken");
+    localStorage.removeItem("teacherUser");
+    sessionStorage.clear();
+    navigate("/signin");
+  };
+
   const menu = [
     { label: "Dashboard", icon: <FiHome />, path: "/teacher" },
     { label: "My Courses", icon: <FiBookOpen />, path: "/teacher/courses" },
@@ -30,7 +38,6 @@ export default function TeacherSidebar() {
     },
     { label: "Attendance", icon: <FiCalendar />, path: "/teacher/attendance" },
     { label: "Inbox", icon: <FiMail />, path: "/teacher/inbox" },
-    { label: "Logout", icon: <FiLogOut />, path: "/teacher/logout", danger: true },
   ];
 
   const isActive = (path) => location.pathname === path;
@@ -115,20 +122,15 @@ export default function TeacherSidebar() {
           // NORMAL MENU ITEM
           const active = isActive(item.path);
 
-          // Push logout to bottom (like your screenshot idea)
-          const wrapperClass = item.danger ? "mt-auto pt-3" : "";
-
           return (
-            <div key={index} className={wrapperClass}>
+            <div key={index}>
               <button
                 onClick={() => navigate(item.path)}
                 className={`
                   w-full flex items-center gap-3.5 rounded-xl px-4 py-3
                   text-[15px] font-semibold transition-all
                   ${
-                    item.danger
-                      ? "text-gray-700 hover:bg-red-50 hover:text-red-600"
-                      : active
+                    active
                       ? "bg-blue-600 text-white shadow-md"
                       : "text-gray-700 hover:bg-blue-50 hover:text-blue-600"
                   }
@@ -141,6 +143,20 @@ export default function TeacherSidebar() {
           );
         })}
       </div>
+
+      <button
+        onClick={handleLogout}
+        className="
+          mt-4 w-full flex items-center gap-3.5 rounded-xl px-4 py-3
+          text-[15px] font-semibold transition-all
+          text-gray-700 hover:bg-red-50 hover:text-red-600
+        "
+      >
+        <span className="text-[18px] leading-none">
+          <FiLogOut />
+        </span>
+        <span className="truncate">Logout</span>
+      </button>
     </div>
   );
 }

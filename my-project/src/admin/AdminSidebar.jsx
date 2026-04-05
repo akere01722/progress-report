@@ -8,11 +8,17 @@ import {
   FiBarChart2,
   FiSettings,
   FiInbox,
+  FiLogOut,
 } from "react-icons/fi";
 
 export default function AdminSidebar() {
   const navigate = useNavigate();
   const location = useLocation();
+
+  const handleLogout = () => {
+    localStorage.removeItem("userData");
+    navigate("/signin");
+  };
 
   const menu = [
     { label: "Dashboard", icon: <FiHome />, path: "/admin" },
@@ -26,7 +32,7 @@ export default function AdminSidebar() {
   ];
 
   return (
-    <div className="w-64 h-screen bg-white shadow-lg fixed left-0 top-0 p-6">
+    <div className="w-64 h-screen bg-white shadow-lg fixed left-0 top-0 p-6 flex flex-col">
 
       {/* Logo */}
       <h1
@@ -60,6 +66,19 @@ export default function AdminSidebar() {
           );
         })}
       </div>
+
+      <button
+        onClick={handleLogout}
+        className="
+          mt-auto flex items-center gap-4 px-5 py-3 rounded-lg text-base font-bold transition-all
+          text-red-600 hover:bg-red-50 hover:text-red-700
+        "
+      >
+        <span className="text-2xl">
+          <FiLogOut />
+        </span>
+        Logout
+      </button>
     </div>
   );
 }

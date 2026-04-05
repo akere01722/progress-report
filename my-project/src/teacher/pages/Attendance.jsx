@@ -1,126 +1,368 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  FiCheckCircle,
-  FiXCircle,
   FiBookOpen,
-  FiLayers,
-  FiSearch,
   FiCalendar,
+  FiCheckCircle,
+  FiLayers,
   FiRefreshCw,
+  FiSave,
+  FiSearch,
+  FiSend,
+  FiXCircle,
 } from "react-icons/fi";
+import { toast } from "react-toastify";
+import {
+  attendanceSaveDraft,
+  attendanceSubmit,
+  classMatchesStudent,
+  fetchTeacherAttendanceContext,
+  fetchTeacherAttendanceEntries,
+  fetchTeacherAttendanceSessions,
+  getAcademicYearByDate,
+  getSemesterByDate,
+} from "../../lib/attendanceWorkflow";
+
+const readUserData = () => {
+  try {
+    const raw = localStorage.getItem("userData");
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+};
+
+const toDateOnly = (value) => {
+  const d = value ? new Date(value) : new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
+};
+
+const STATUS_STYLES = {
+  draft: "border-gray-200 bg-gray-50 text-gray-700",
+  submitted: "border-amber-200 bg-amber-50 text-amber-700",
+  approved: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  rejected: "border-red-200 bg-red-50 text-red-700",
+};
+
+const MARK_STYLES = {
+  present: "border-green-200 bg-green-50 text-green-700",
+  absent: "border-red-200 bg-red-50 text-red-700",
+  late: "border-yellow-200 bg-yellow-50 text-yellow-700",
+  excused: "border-blue-200 bg-blue-50 text-blue-700",
+};
+
+const ATTENDANCE_OPTIONS = [
+  { value: "present", label: "Present", Icon: FiCheckCircle },
+  { value: "absent", label: "Absent", Icon: FiXCircle },
+  { value: "late", label: "Late", Icon: FiCalendar },
+  { value: "excused", label: "Excused", Icon: FiBookOpen },
+];
 
 export default function TeacherAttendance() {
-  const levelsData = useMemo(() => ({
-    "Level 100": {
-      program: "BSc Computer Science",
-      courses: [
-        { code: "CSC101", title: "Introduction to Computing" },
-        { code: "MTH101", title: "Mathematics I" },
-      ],
-      students: [
-        { id: "ST1001", name: "Alice Nfor" },
-        { id: "ST1002", name: "Brian Tamba" },
-        { id: "ST1003", name: "Clara Mbua" },
-        { id: "ST1004", name: "Daniel Fonkeng" },
-      ],
-    },
-    "Level 200": {
-      program: "BSc Computer Science",
-      courses: [
-        { code: "CSC201", title: "Data Structures" },
-        { code: "CSC202", title: "Discrete Mathematics" },
-      ],
-      students: [
-        { id: "ST2001", name: "Emmanuel Tita" },
-        { id: "ST2002", name: "Grace Forbi" },
-        { id: "ST2003", name: "Henry Nsoh" },
-      ],
-    },
-  }), []);
+  const userData = useMemo(() => readUserData(), []);
+  const [loading, setLoading] = useState(true);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const levelOptions = Object.keys(levelsData);
+  const [context, setContext] = useState(null);
+  const [sessions, setSessions] = useState([]);
+  const [activeSessionId, setActiveSessionId] = useState("");
 
-  // ✅ placeholders (same fix like CA/Exams)
-  const [selectedLevel, setSelectedLevel] = useState("");
-  const [selectedCourse, setSelectedCourse] = useState("");
-
+  const [selectedClass, setSelectedClass] = useState("");
+  const [selectedSubject, setSelectedSubject] = useState("");
+  const [sessionDate, setSessionDate] = useState(() => toDateOnly(new Date()));
+  const [teacherNote, setTeacherNote] = useState("");
   const [search, setSearch] = useState("");
-  const [attendance, setAttendance] = useState({}); // { studentId: "present" | "absent" }
-  const [sessionDate, setSessionDate] = useState(() => {
-    const d = new Date();
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
-  });
+  const [attendance, setAttendance] = useState({});
 
-  const courseOptions = useMemo(() => {
-    if (!selectedLevel) return [];
-    return levelsData[selectedLevel].courses;
-  }, [levelsData, selectedLevel]);
+  const teacher = context?.teacher || null;
+  const assignments = useMemo(() => context?.assignments || [], [context?.assignments]);
+  const studentsCatalog = useMemo(() => context?.students || [], [context?.students]);
 
-  const students = useMemo(() => {
-    if (!selectedLevel || !selectedCourse) return [];
-    return levelsData[selectedLevel].students;
-  }, [levelsData, selectedLevel, selectedCourse]);
+  const classOptions = useMemo(
+    () => Array.from(new Set(assignments.map((item) => item.className))).sort((a, b) => a.localeCompare(b)),
+    [assignments]
+  );
+
+  const subjectOptions = useMemo(
+    () =>
+      assignments
+        .filter((item) => item.className === selectedClass)
+        .map((item) => item.subject)
+        .sort((a, b) => a.localeCompare(b)),
+    [assignments, selectedClass]
+  );
+
+  const classStudents = useMemo(() => {
+    if (!selectedClass) return [];
+    return studentsCatalog
+      .filter((student) => classMatchesStudent(selectedClass, student))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [studentsCatalog, selectedClass]);
 
   const filteredStudents = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return students;
-    return students.filter(
-      (s) => s.name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)
+    if (!q) return classStudents;
+    return classStudents.filter(
+      (student) =>
+        student.name.toLowerCase().includes(q) || student.matricule.toLowerCase().includes(q)
     );
-  }, [students, search]);
+  }, [classStudents, search]);
 
-  const canUseTable = Boolean(selectedLevel && selectedCourse);
+  const canUseTable = Boolean(selectedClass && selectedSubject);
 
-  const toggleAttendance = (studentId, status) => {
-    setAttendance((prev) => ({ ...prev, [studentId]: status }));
+  const markedCount = useMemo(
+    () => classStudents.filter((student) => attendance[student.matricule]).length,
+    [classStudents, attendance]
+  );
+  const presentCount = useMemo(
+    () => classStudents.filter((student) => attendance[student.matricule] === "present").length,
+    [classStudents, attendance]
+  );
+  const absentCount = useMemo(
+    () => classStudents.filter((student) => attendance[student.matricule] === "absent").length,
+    [classStudents, attendance]
+  );
+  const lateCount = useMemo(
+    () => classStudents.filter((student) => attendance[student.matricule] === "late").length,
+    [classStudents, attendance]
+  );
+
+  const currentSession = useMemo(() => {
+    if (!canUseTable) return null;
+    return (
+      sessions.find(
+        (row) =>
+          row.className === selectedClass &&
+          row.subject === selectedSubject &&
+          String(row.sessionDate || "").slice(0, 10) === sessionDate
+      ) || null
+    );
+  }, [sessions, canUseTable, selectedClass, selectedSubject, sessionDate]);
+
+  const loadSessions = useCallback(
+    async (teacherId, isSilent = false) => {
+      if (!teacherId) return;
+      if (isSilent) setRefreshing(true);
+      try {
+        const rows = await fetchTeacherAttendanceSessions({ teacherId, limit: 120 });
+        setSessions(rows);
+      } finally {
+        if (isSilent) setRefreshing(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    let mounted = true;
+
+    const load = async () => {
+      if (!userData?.id && !userData?.staffId && !userData?.email) {
+        toast.error("Teacher session not found. Please sign in again.");
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const nextContext = await fetchTeacherAttendanceContext({
+          teacherUserId: userData?.id || "",
+          staffId: userData?.staffId || "",
+          email: userData?.email || "",
+        });
+        if (!mounted) return;
+        setContext(nextContext);
+        await loadSessions(nextContext.teacher.id);
+      } catch (error) {
+        if (!mounted) return;
+        toast.error(error?.message || "Failed to load attendance setup.");
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    };
+
+    void load();
+    return () => {
+      mounted = false;
+    };
+  }, [userData?.id, userData?.staffId, userData?.email, loadSessions]);
+
+  useEffect(() => {
+    if (!selectedClass) {
+      setSelectedSubject("");
+      setSearch("");
+      setAttendance({});
+    }
+  }, [selectedClass]);
+
+  useEffect(() => {
+    if (selectedSubject && !subjectOptions.includes(selectedSubject)) {
+      setSelectedSubject("");
+      setAttendance({});
+      setSearch("");
+    }
+  }, [selectedSubject, subjectOptions]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadCurrentEntries = async () => {
+      if (!teacher?.id || !currentSession?.id) {
+        if (mounted) {
+          setActiveSessionId("");
+          setTeacherNote("");
+          setAttendance({});
+        }
+        return;
+      }
+
+      try {
+        const rows = await fetchTeacherAttendanceEntries({
+          teacherId: teacher.id,
+          sessionId: currentSession.id,
+        });
+        if (!mounted) return;
+        const mapped = {};
+        rows.forEach((row) => {
+          if (row.matricule) mapped[row.matricule] = row.mark;
+        });
+        setActiveSessionId(currentSession.id);
+        setTeacherNote(currentSession.teacherNote || "");
+        setAttendance(mapped);
+      } catch (error) {
+        if (!mounted) return;
+        setActiveSessionId(currentSession.id);
+        setTeacherNote(currentSession.teacherNote || "");
+        setAttendance({});
+        toast.error(error?.message || "Failed to load session marks.");
+      }
+    };
+
+    void loadCurrentEntries();
+    return () => {
+      mounted = false;
+    };
+  }, [teacher?.id, currentSession?.id, currentSession?.teacherNote]);
+
+  const setStudentMark = (matricule, mark) => {
+    setAttendance((prev) => ({ ...prev, [matricule]: mark }));
   };
 
-  const markedCount = useMemo(() => {
-    if (!canUseTable) return 0;
-    return students.filter((s) => attendance[s.id]).length;
-  }, [students, attendance, canUseTable]);
-
-  const presentCount = useMemo(() => {
-    if (!canUseTable) return 0;
-    return students.filter((s) => attendance[s.id] === "present").length;
-  }, [students, attendance, canUseTable]);
-
-  const absentCount = useMemo(() => {
-    if (!canUseTable) return 0;
-    return students.filter((s) => attendance[s.id] === "absent").length;
-  }, [students, attendance, canUseTable]);
-
-  const clearMarks = () => setAttendance({});
-
-  const submit = () => {
-    // Replace with Supabase later
-    alert(
-      `Attendance saved!\nDate: ${sessionDate}\nLevel: ${selectedLevel}\nCourse: ${selectedCourse}\nMarked: ${markedCount}/${students.length}`
-    );
+  const clearMarks = () => {
+    setAttendance({});
   };
+
+  const buildEntriesPayload = (requireAll = false) => {
+    if (!classStudents.length) return [];
+
+    const rows = classStudents
+      .map((student) => ({
+        student_id: student.id || null,
+        matricule: student.matricule,
+        student_name: student.name,
+        mark: attendance[student.matricule] || "",
+      }))
+      .filter((row) => (requireAll ? true : Boolean(row.mark)));
+
+    if (requireAll) {
+      const missing = rows.filter((row) => !row.mark).map((row) => row.matricule);
+      if (missing.length > 0) {
+        return { entries: [], missing };
+      }
+    }
+
+    return { entries: rows, missing: [] };
+  };
+
+  const persistDraft = async ({ andSubmit = false } = {}) => {
+    if (!teacher?.id) {
+      toast.error("Teacher identity missing.");
+      return;
+    }
+
+    if (!selectedClass || !selectedSubject) {
+      toast.error("Select class and subject first.");
+      return;
+    }
+
+    if (!classStudents.length) {
+      toast.error("No students found for selected class.");
+      return;
+    }
+
+    const { entries, missing } = buildEntriesPayload(andSubmit);
+    if (andSubmit && missing.length > 0) {
+      toast.error("Mark all students before submitting.");
+      return;
+    }
+
+    if (!andSubmit && entries.length === 0) {
+      toast.error("Mark at least one student to save a draft.");
+      return;
+    }
+
+    if (andSubmit) setSubmitting(true);
+    else setSavingDraft(true);
+
+    try {
+      const saved = await attendanceSaveDraft({
+        teacherId: teacher.id,
+        facultyId: teacher.facultyId || null,
+        departmentId: teacher.departmentId || null,
+        className: selectedClass,
+        subject: selectedSubject,
+        sessionDate,
+        academicYear: getAcademicYearByDate(sessionDate),
+        semester: getSemesterByDate(sessionDate),
+        teacherNote,
+        entries,
+      });
+
+      setActiveSessionId(saved.sessionId || "");
+
+      if (andSubmit) {
+        await attendanceSubmit({
+          teacherId: teacher.id,
+          sessionId: saved.sessionId,
+        });
+        toast.success("Attendance submitted to admin.");
+      } else {
+        toast.success("Attendance draft saved.");
+      }
+
+      await loadSessions(teacher.id, true);
+    } catch (error) {
+      toast.error(error?.message || "Attendance action failed.");
+    } finally {
+      setSavingDraft(false);
+      setSubmitting(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-gray-200 bg-white p-5 text-sm text-gray-600">
+        Loading attendance page...
+      </div>
+    );
+  }
 
   return (
-    <div className="w-full">
-      {/* HEADER */}
+    <div className="w-full space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">
-            Attendance
-          </h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Attendance</h1>
           <p className="text-gray-500 mt-1">
-            Select level and course, then mark students present or absent.
+            Mark attendance, save draft, then submit for admin review.
           </p>
         </div>
 
-        {/* Summary chips */}
         <div className="flex flex-wrap gap-2">
           <span className="inline-flex items-center rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700">
-            Marked: <span className="ml-1 text-gray-900">{markedCount}</span>
-            <span className="text-gray-400">/</span>
-            <span className="text-gray-900">{canUseTable ? students.length : 0}</span>
+            Marked: <span className="ml-1 text-gray-900">{markedCount}</span>/
+            <span className="ml-1 text-gray-900">{classStudents.length}</span>
           </span>
           <span className="inline-flex items-center rounded-xl border border-green-200 bg-green-50 px-3 py-2 text-xs font-semibold text-green-700">
             Present: <span className="ml-1">{presentCount}</span>
@@ -128,62 +370,47 @@ export default function TeacherAttendance() {
           <span className="inline-flex items-center rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
             Absent: <span className="ml-1">{absentCount}</span>
           </span>
+          <span className="inline-flex items-center rounded-xl border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs font-semibold text-yellow-700">
+            Late: <span className="ml-1">{lateCount}</span>
+          </span>
         </div>
       </div>
 
-      {/* FILTERS */}
-      <div className="mt-6 bg-white rounded-2xl border border-gray-100 shadow-sm p-4 sm:p-5">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
-          {/* Level */}
+      <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm sm:p-5">
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
           <div className="lg:col-span-3 flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2.5">
             <FiLayers className="text-blue-600" />
             <select
-              value={selectedLevel}
-              onChange={(e) => {
-                const lvl = e.target.value;
-                setSelectedLevel(lvl);
-                setSelectedCourse(""); // reset
-                setSearch("");
-                setAttendance({});
-              }}
+              value={selectedClass}
+              onChange={(e) => setSelectedClass(e.target.value)}
               className="w-full bg-transparent outline-none text-sm font-semibold text-gray-700"
             >
-              <option value="" disabled>
-                Select Level
-              </option>
-              {levelOptions.map((lvl) => (
-                <option key={lvl} value={lvl}>
-                  {lvl}
+              <option value="">Select Class</option>
+              {classOptions.map((className) => (
+                <option key={className} value={className}>
+                  {className}
                 </option>
               ))}
             </select>
           </div>
 
-          {/* Course */}
-          <div className="lg:col-span-5 flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2.5">
+          <div className="lg:col-span-3 flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2.5">
             <FiBookOpen className="text-blue-600" />
             <select
-              value={selectedCourse}
-              disabled={!selectedLevel}
-              onChange={(e) => {
-                setSelectedCourse(e.target.value);
-                setSearch("");
-                setAttendance({});
-              }}
+              value={selectedSubject}
+              onChange={(e) => setSelectedSubject(e.target.value)}
+              disabled={!selectedClass}
               className="w-full bg-transparent outline-none text-sm font-semibold text-gray-700 disabled:opacity-60"
             >
-              <option value="" disabled>
-                Select Course
-              </option>
-              {courseOptions.map((c) => (
-                <option key={c.code} value={c.code}>
-                  {c.code} — {c.title}
+              <option value="">Select Subject</option>
+              {subjectOptions.map((subject) => (
+                <option key={subject} value={subject}>
+                  {subject}
                 </option>
               ))}
             </select>
           </div>
 
-          {/* Date */}
           <div className="lg:col-span-2 flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2.5">
             <FiCalendar className="text-blue-600" />
             <input
@@ -194,158 +421,104 @@ export default function TeacherAttendance() {
             />
           </div>
 
-          {/* Search */}
           <div className="lg:col-span-2 flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2.5">
             <FiSearch className="text-gray-400" />
             <input
               value={search}
-              disabled={!canUseTable}
               onChange={(e) => setSearch(e.target.value)}
+              disabled={!canUseTable}
               placeholder="Search student..."
               className="w-full outline-none text-sm text-gray-700 placeholder:text-gray-400 disabled:opacity-60"
             />
           </div>
-        </div>
-
-        <div className="mt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-          <p className="text-sm text-gray-500">
-            {canUseTable
-              ? `Marking attendance for ${selectedLevel} • ${selectedCourse} • ${sessionDate}`
-              : "Choose Level → Course to load students."}
-          </p>
 
           <button
             type="button"
-            onClick={clearMarks}
-            className="inline-flex items-center gap-2 text-sm font-semibold text-blue-600 hover:text-blue-700"
+            onClick={() => {
+              if (teacher?.id) {
+                void loadSessions(teacher.id, true).catch((error) =>
+                  toast.error(error?.message || "Failed to refresh attendance.")
+                );
+              }
+            }}
+            className="lg:col-span-2 inline-flex items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2.5 text-sm font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-60"
+            disabled={refreshing || !teacher?.id}
           >
-            <FiRefreshCw />
-            Clear marks
+            <FiRefreshCw className={refreshing ? "animate-spin" : ""} />
+            Refresh
           </button>
+        </div>
+
+        <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <input
+            value={teacherNote}
+            onChange={(e) => setTeacherNote(e.target.value)}
+            placeholder="Optional note to admin..."
+            className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          {currentSession && (
+            <div className="flex items-center justify-start lg:justify-end">
+              <span
+                className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${
+                  STATUS_STYLES[currentSession.status] || STATUS_STYLES.draft
+                }`}
+              >
+                Current status: {currentSession.status}
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* TABLE */}
       {canUseTable && (
-        <div className="mt-6 bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-          <div className="px-5 sm:px-6 py-4 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <div>
-              <p className="text-sm font-semibold text-gray-900">Student List</p>
-              <p className="text-xs text-gray-500 mt-0.5">
-                Tap “Present” or “Absent” for each student.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  const bulk = {};
-                  students.forEach((s) => (bulk[s.id] = "present"));
-                  setAttendance(bulk);
-                }}
-                className="rounded-xl border border-green-200 bg-green-50 px-3 py-2 text-xs font-semibold text-green-700 hover:bg-green-100 transition"
-              >
-                Mark all Present
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  const bulk = {};
-                  students.forEach((s) => (bulk[s.id] = "absent"));
-                  setAttendance(bulk);
-                }}
-                className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100 transition"
-              >
-                Mark all Absent
-              </button>
-            </div>
-          </div>
-
+        <div className="rounded-2xl border border-gray-100 bg-white shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-gray-700">
+              <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left px-5 sm:px-6 py-3 font-semibold text-gray-600">
-                    Student ID
-                  </th>
-                  <th className="text-left px-5 sm:px-6 py-3 font-semibold text-gray-600">
-                    Name
-                  </th>
-                  <th className="text-center px-5 sm:px-6 py-3 font-semibold text-gray-600">
-                    Status
-                  </th>
-                  <th className="text-center px-5 sm:px-6 py-3 font-semibold text-gray-600">
-                    Action
-                  </th>
+                  <th className="px-5 py-3 text-left font-semibold text-gray-600">Matricule</th>
+                  <th className="px-5 py-3 text-left font-semibold text-gray-600">Student Name</th>
+                  <th className="px-5 py-3 text-center font-semibold text-gray-600">Mark</th>
+                  <th className="px-5 py-3 text-center font-semibold text-gray-600">Action</th>
                 </tr>
               </thead>
-
               <tbody>
                 {filteredStudents.map((student) => {
-                  const status = attendance[student.id];
-
+                  const mark = attendance[student.matricule] || "";
                   return (
-                    <tr key={student.id} className="border-t hover:bg-gray-50 transition">
-                      <td className="px-5 sm:px-6 py-3 font-semibold text-gray-900 whitespace-nowrap">
-                        {student.id}
-                      </td>
-
-                      <td className="px-5 sm:px-6 py-3 text-gray-700">
-                        {student.name}
-                      </td>
-
-                      <td className="px-5 sm:px-6 py-3 text-center">
-                        {status ? (
+                    <tr key={student.matricule} className="border-t hover:bg-gray-50 transition">
+                      <td className="px-5 py-3 font-semibold text-gray-900">{student.matricule}</td>
+                      <td className="px-5 py-3 text-gray-700">{student.name}</td>
+                      <td className="px-5 py-3 text-center">
+                        {mark ? (
                           <span
-                            className={[
-                              "inline-flex items-center justify-center rounded-xl border px-3 py-1 text-xs font-extrabold",
-                              status === "present"
-                                ? "border-green-200 bg-green-50 text-green-700"
-                                : "border-red-200 bg-red-50 text-red-700",
-                            ].join(" ")}
+                            className={`inline-flex rounded-xl border px-3 py-1 text-xs font-extrabold ${
+                              MARK_STYLES[mark] || "border-gray-200 bg-gray-50 text-gray-700"
+                            }`}
                           >
-                            {status.toUpperCase()}
+                            {mark.toUpperCase()}
                           </span>
                         ) : (
-                          <span className="text-gray-400">Not Marked</span>
+                          <span className="text-gray-400">Not marked</span>
                         )}
                       </td>
-
-                      <td className="px-5 sm:px-6 py-3">
-                        <div className="flex flex-col sm:flex-row justify-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => toggleAttendance(student.id, "present")}
-                            className={`
-                              inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-xs sm:text-sm font-semibold transition
-                              ${
-                                status === "present"
-                                  ? "bg-green-600 text-white shadow-sm"
-                                  : "border border-green-200 bg-green-50 text-green-700 hover:bg-green-100"
-                              }
-                            `}
-                          >
-                            <FiCheckCircle />
-                            Present
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => toggleAttendance(student.id, "absent")}
-                            className={`
-                              inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-xs sm:text-sm font-semibold transition
-                              ${
-                                status === "absent"
-                                  ? "bg-red-600 text-white shadow-sm"
-                                  : "border border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
-                              }
-                            `}
-                          >
-                            <FiXCircle />
-                            Absent
-                          </button>
+                      <td className="px-5 py-3">
+                        <div className="flex flex-wrap justify-center gap-2">
+                          {ATTENDANCE_OPTIONS.map((option) => (
+                            <button
+                              key={option.value}
+                              type="button"
+                              onClick={() => setStudentMark(student.matricule, option.value)}
+                              className={`inline-flex items-center gap-1 rounded-xl px-3 py-2 text-xs font-semibold transition ${
+                                mark === option.value
+                                  ? "bg-blue-600 text-white shadow-sm"
+                                  : "border border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
+                              }`}
+                            >
+                              <option.Icon />
+                              {option.label}
+                            </button>
+                          ))}
                         </div>
                       </td>
                     </tr>
@@ -363,24 +536,98 @@ export default function TeacherAttendance() {
             </table>
           </div>
 
-          {/* ACTION BAR */}
-          <div className="px-5 sm:px-6 py-4 border-t border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <p className="text-sm text-gray-500">
-              Marked <span className="font-semibold text-gray-900">{markedCount}</span>{" "}
-              out of <span className="font-semibold text-gray-900">{students.length}</span>{" "}
-              students.
-            </p>
-
+          <div className="border-t border-gray-100 px-5 py-4 sm:px-6 flex flex-wrap justify-between gap-3">
             <button
               type="button"
-              onClick={submit}
-              className="inline-flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-sm transition hover:-translate-y-0.5"
+              onClick={clearMarks}
+              className="inline-flex items-center gap-2 rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
             >
-              Submit Attendance
+              <FiRefreshCw />
+              Clear Marks
             </button>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void persistDraft({ andSubmit: false })}
+                disabled={savingDraft || submitting}
+                className="inline-flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-60"
+              >
+                <FiSave />
+                {savingDraft ? "Saving..." : "Save Draft"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void persistDraft({ andSubmit: true })}
+                disabled={savingDraft || submitting}
+                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+              >
+                <FiSend />
+                {submitting ? "Submitting..." : "Submit to Admin"}
+              </button>
+            </div>
           </div>
         </div>
       )}
+
+      <div className="rounded-2xl border border-gray-100 bg-white shadow-sm overflow-hidden">
+        <div className="border-b border-gray-100 px-5 py-4 sm:px-6">
+          <h3 className="text-base font-semibold text-gray-900">Recent Attendance Sessions</h3>
+          <p className="text-sm text-gray-500 mt-1">Draft, submitted, and reviewed sessions.</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-5 py-3 text-left font-semibold text-gray-600">Date</th>
+                <th className="px-5 py-3 text-left font-semibold text-gray-600">Class</th>
+                <th className="px-5 py-3 text-left font-semibold text-gray-600">Subject</th>
+                <th className="px-5 py-3 text-center font-semibold text-gray-600">Students</th>
+                <th className="px-5 py-3 text-center font-semibold text-gray-600">Present %</th>
+                <th className="px-5 py-3 text-center font-semibold text-gray-600">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sessions.map((row) => (
+                <tr
+                  key={row.id}
+                  className={`border-t cursor-pointer hover:bg-gray-50 ${
+                    activeSessionId === row.id ? "bg-blue-50/40" : ""
+                  }`}
+                  onClick={() => {
+                    setSelectedClass(row.className);
+                    setSelectedSubject(row.subject);
+                    setSessionDate(String(row.sessionDate || "").slice(0, 10));
+                  }}
+                >
+                  <td className="px-5 py-3">{row.sessionDate ? new Date(row.sessionDate).toLocaleDateString() : "-"}</td>
+                  <td className="px-5 py-3">{row.className}</td>
+                  <td className="px-5 py-3">{row.subject}</td>
+                  <td className="px-5 py-3 text-center">{row.totals.total}</td>
+                  <td className="px-5 py-3 text-center">{row.totals.rate}%</td>
+                  <td className="px-5 py-3 text-center">
+                    <span
+                      className={`inline-flex rounded-full border px-2.5 py-0.5 text-xs font-semibold ${
+                        STATUS_STYLES[row.status] || STATUS_STYLES.draft
+                      }`}
+                    >
+                      {row.status}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+
+              {sessions.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-6 py-10 text-center text-gray-500">
+                    No attendance sessions yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }

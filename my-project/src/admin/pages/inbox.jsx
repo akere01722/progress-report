@@ -1,278 +1,264 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { FiBell, FiSend, FiTrash2, FiUsers } from "react-icons/fi";
+import { toast } from "react-toastify";
 import {
-  FiInbox,
-  FiSend,
-  FiEdit2,
-  FiArrowLeft,
-  FiUser,
-} from "react-icons/fi";
+  AUDIENCE_OPTIONS,
+  deleteAdminNotification,
+  fetchAdminNotifications,
+  fetchAudienceCounts,
+  getAudienceLabel,
+  sendAdminNotification,
+} from "../../lib/notificationsWorkflow";
+
+const readUserData = () => {
+  try {
+    const raw = localStorage.getItem("userData");
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+};
 
 export default function AdminInbox() {
-  const [activeTab, setActiveTab] = useState("inbox");
-  const [selectedMessage, setSelectedMessage] = useState(null);
-  const [replyText, setReplyText] = useState("");
-  const [composeTo, setComposeTo] = useState("");
-  const [composeSubject, setComposeSubject] = useState("");
-  const [composeBody, setComposeBody] = useState("");
-  const [sentMessages, setSentMessages] = useState([]);
+  const userData = useMemo(() => readUserData(), []);
+  const [audience, setAudience] = useState("teachers");
+  const [title, setTitle] = useState("");
+  const [message, setMessage] = useState("");
+  const [notifications, setNotifications] = useState([]);
+  const [teachersCount, setTeachersCount] = useState(0);
+  const [studentsCount, setStudentsCount] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [deletingMessageId, setDeletingMessageId] = useState("");
 
-  /* MOCK DATA */
-  const inboxMessages = [
-    {
-      id: 1,
-      from: "John Doe (Teacher)",
-      subject: "Request for Leave",
-      body: "I need to take leave on 2026-01-25 due to personal reasons.",
-      date: "2026-01-22",
-    },
-    {
-      id: 2,
-      from: "Jane Smith (Teacher)",
-      subject: "Class Schedule Change",
-      body: "Please adjust the schedule for CSC201 as per the new timetable.",
-      date: "2026-01-18",
-    },
-  ];
+  const loadInboxData = useCallback(async () => {
+    try {
+      setLoading(true);
+      const [counts, sent] = await Promise.all([
+        fetchAudienceCounts(),
+        fetchAdminNotifications({ limit: 200, adminId: userData?.id || "" }),
+      ]);
 
-  const handleSendReply = () => {
-    if (!replyText.trim()) return alert("Please type a reply");
-    const newMsg = {
-      id: Date.now(),
-      to: selectedMessage.from,
-      subject: `Re: ${selectedMessage.subject}`,
-      body: replyText,
-      date: new Date().toISOString().slice(0, 10),
-    };
-    setSentMessages([newMsg, ...sentMessages]);
-    setReplyText("");
-    alert("Reply sent successfully!");
+      setTeachersCount(Number(counts?.teachers || 0));
+      setStudentsCount(Number(counts?.students || 0));
+      setNotifications(Array.isArray(sent) ? sent : []);
+    } catch (error) {
+      toast.error(error?.message || "Failed to load inbox data.");
+    } finally {
+      setLoading(false);
+    }
+  }, [userData?.id]);
+
+  useEffect(() => {
+    loadInboxData();
+  }, [loadInboxData]);
+
+  const targetCount = useMemo(() => {
+    if (audience === "teachers") return teachersCount;
+    if (audience === "students") return studentsCount;
+    return teachersCount + studentsCount;
+  }, [audience, studentsCount, teachersCount]);
+
+  const handleSend = async () => {
+    if (!title.trim() || !message.trim()) {
+      toast.error("Please enter notification title and message.");
+      return;
+    }
+
+    if (!userData?.id) {
+      toast.error("Admin session missing. Please sign in again.");
+      return;
+    }
+
+    try {
+      setSending(true);
+
+      const { error } = await sendAdminNotification({
+        audience,
+        title,
+        message,
+        senderId: userData.id,
+      });
+
+      if (error) throw error;
+
+      setTitle("");
+      setMessage("");
+      await loadInboxData();
+      toast.success("Notification sent successfully.");
+    } catch (error) {
+      toast.error(error?.message || "Failed to send notification.");
+    } finally {
+      setSending(false);
+    }
   };
 
-  const handleSendMessage = () => {
-    if (!composeTo.trim() || !composeSubject.trim() || !composeBody.trim()) {
-      return alert("Please fill in all fields");
+  const handleDeleteMessage = async (item) => {
+    if (!item?.id) return;
+    if (!userData?.id) {
+      toast.error("Admin session missing. Please sign in again.");
+      return;
     }
-    const newMsg = {
-      id: Date.now(),
-      to: composeTo,
-      subject: composeSubject,
-      body: composeBody,
-      date: new Date().toISOString().slice(0, 10),
-    };
-    setSentMessages([newMsg, ...sentMessages]);
-    setComposeTo("");
-    setComposeSubject("");
-    setComposeBody("");
-    setActiveTab("sent");
-    alert("Message sent successfully!");
+
+    const confirmed = window.confirm("Delete this message for all recipients?");
+    if (!confirmed) return;
+
+    try {
+      setDeletingMessageId(item.id);
+      await deleteAdminNotification({
+        messageId: item.id,
+        adminId: userData.id,
+      });
+      setNotifications((prev) => prev.filter((row) => row.id !== item.id));
+      toast.success("Message deleted.");
+    } catch (error) {
+      toast.error(error?.message || "Failed to delete message.");
+    } finally {
+      setDeletingMessageId("");
+    }
   };
 
   return (
-    <div className="p-8 bg-gray-50 min-h-screen">
-
-      {/* PAGE HEADER */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold">
-          Inbox
-        </h1>
-        <p className="text-sm text-gray-500">
-          Admin ↔ Teacher Communication
+    <div className="space-y-6">
+      <div className="overflow-hidden rounded-3xl border border-blue-100 bg-gradient-to-r from-blue-700 via-blue-600 to-cyan-500 p-6 text-white shadow-lg sm:p-7">
+        <h1 className="text-2xl font-bold sm:text-3xl">Admin Inbox & Broadcast</h1>
+        <p className="mt-1 text-sm text-blue-50 sm:text-base">
+          Send notifications to teachers only, students only, or everyone.
         </p>
       </div>
 
-      {/* TABS */}
-      <div className="flex gap-4 mb-6">
-        <button
-          onClick={() => {
-            setActiveTab("inbox");
-            setSelectedMessage(null);
-          }}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold ${
-            activeTab === "inbox"
-              ? "bg-blue-600 text-white"
-              : "bg-white shadow"
-          }`}
-        >
-          <FiInbox /> Inbox
-        </button>
+      <div className="grid gap-6 xl:grid-cols-3">
+        <div className="xl:col-span-2 rounded-2xl border border-gray-100 bg-white p-5 shadow-sm">
+          <h2 className="text-lg font-semibold text-gray-900">New Notification</h2>
+          <p className="mt-1 text-sm text-gray-500">Audience targeted announcement.</p>
 
-        <button
-          onClick={() => {
-            setActiveTab("sent");
-            setSelectedMessage(null);
-          }}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold ${
-            activeTab === "sent"
-              ? "bg-blue-600 text-white"
-              : "bg-white shadow"
-          }`}
-        >
-          <FiSend /> Sent
-        </button>
-
-        <button
-          onClick={() => {
-            setActiveTab("compose");
-            setSelectedMessage(null);
-          }}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold ${
-            activeTab === "compose"
-              ? "bg-blue-600 text-white"
-              : "bg-white shadow"
-          }`}
-        >
-          <FiEdit2 /> Compose
-        </button>
-      </div>
-
-      {/* CONTENT */}
-      <div className="bg-white rounded-xl shadow grid grid-cols-1 md:grid-cols-3 min-h-[500px]">
-
-        {/* MESSAGE LIST */}
-        {(activeTab === "inbox" || activeTab === "sent") && (
-          <div className="border-r p-4 space-y-2">
-
-            {(activeTab === "inbox"
-              ? inboxMessages
-              : sentMessages
-            ).map((msg) => (
-              <button
-                key={msg.id}
-                onClick={() => setSelectedMessage(msg)}
-                className="w-full text-left p-3 rounded-lg hover:bg-blue-50 transition"
-              >
-                <div className="flex justify-between">
-                  <span className="font-semibold">
-                    {activeTab === "inbox"
-                      ? msg.from
-                      : msg.to}
-                  </span>
-                  <span className="text-xs text-gray-400">
-                    {msg.date}
-                  </span>
-                </div>
-
-                <p className="text-sm text-gray-600 truncate">
-                  {msg.subject}
-                </p>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* MESSAGE VIEW / COMPOSE */}
-        <div className="md:col-span-2 p-6">
-
-          {/* MESSAGE VIEW */}
-          {selectedMessage && activeTab !== "compose" && (
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
             <div>
-
-              <button
-                onClick={() => setSelectedMessage(null)}
-                className="flex items-center gap-2 text-blue-600 mb-4"
+              <label className="mb-1 block text-sm font-semibold text-gray-700">Audience</label>
+              <select
+                value={audience}
+                onChange={(e) => setAudience(e.target.value)}
+                className="w-full rounded-xl border border-gray-200 px-3 py-3 text-sm font-semibold text-gray-700 outline-none focus:ring-2 focus:ring-blue-500"
               >
-                <FiArrowLeft />
-                Back
-              </button>
+                {AUDIENCE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-              <h2 className="text-xl font-bold">
-                {selectedMessage.subject}
-              </h2>
-
-              <p className="text-sm text-gray-500 mb-2">
-                {activeTab === "inbox"
-                  ? `From: ${selectedMessage.from}`
-                  : `To: ${selectedMessage.to}`}{" "}
-                • {selectedMessage.date}
+            <div className="rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3">
+              <p className="text-xs font-semibold text-blue-700">Estimated Recipients</p>
+              <p className="mt-1 text-2xl font-bold text-blue-900">{targetCount}</p>
+              <p className="mt-1 text-xs text-blue-700">
+                Teachers: {teachersCount} | Students: {studentsCount}
               </p>
-
-              <div className="bg-gray-50 p-4 rounded-lg mb-6">
-                {selectedMessage.body}
-              </div>
-
-              {/* REPLY */}
-              {activeTab === "inbox" && (
-                <div>
-                  <h3 className="font-semibold mb-2">
-                    Reply
-                  </h3>
-
-                  <textarea
-                    value={replyText}
-                    onChange={(e) => setReplyText(e.target.value)}
-                    className="border p-3 rounded-lg w-full mb-3"
-                    rows="4"
-                    placeholder="Type your reply..."
-                  />
-
-                  <button 
-                    onClick={handleSendReply}
-                    className="bg-blue-600 text-white px-6 py-2 rounded-lg font-semibold"
-                  >
-                    Send Reply
-                  </button>
-                </div>
-              )}
             </div>
-          )}
+          </div>
 
-          {/* COMPOSE */}
-          {activeTab === "compose" && (
-            <div>
+          <div className="mt-4">
+            <label className="mb-1 block text-sm font-semibold text-gray-700">Title</label>
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g. Semester registration deadline"
+              className="w-full rounded-xl border border-gray-200 px-3 py-3 text-sm text-gray-700 outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
 
-              <h2 className="text-xl font-bold mb-4">
-                New Message
-              </h2>
+          <div className="mt-4">
+            <label className="mb-1 block text-sm font-semibold text-gray-700">Message</label>
+            <textarea
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              rows={6}
+              placeholder="Write the full notification here..."
+              className="w-full rounded-xl border border-gray-200 px-3 py-3 text-sm text-gray-700 outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
 
-              <div className="space-y-4">
-
-                <input
-                  type="text"
-                  placeholder="To (Teacher)"
-                  value={composeTo}
-                  onChange={(e) => setComposeTo(e.target.value)}
-                  className="border p-3 rounded-lg w-full"
-                />
-
-                <input
-                  type="text"
-                  placeholder="Subject"
-                  value={composeSubject}
-                  onChange={(e) => setComposeSubject(e.target.value)}
-                  className="border p-3 rounded-lg w-full"
-                />
-
-                <textarea
-                  rows="6"
-                  placeholder="Write message..."
-                  value={composeBody}
-                  onChange={(e) => setComposeBody(e.target.value)}
-                  className="border p-3 rounded-lg w-full"
-                />
-
-                <button 
-                  onClick={handleSendMessage}
-                  className="bg-green-600 text-white px-6 py-2 rounded-lg font-semibold flex items-center gap-2"
-                >
-                  <FiSend />
-                  Send Message
-                </button>
-
-              </div>
-
-            </div>
-          )}
-
-          {!selectedMessage && activeTab !== "compose" && (
-            <div className="text-gray-400 flex items-center justify-center h-full">
-              Select a message to view
-            </div>
-          )}
-
+          <button
+            type="button"
+            onClick={handleSend}
+            disabled={sending}
+            className="mt-4 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+          >
+            <FiSend />
+            {sending ? "Sending..." : "Send Notification"}
+          </button>
         </div>
 
+        <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm">
+          <h2 className="text-lg font-semibold text-gray-900">Quick Stats</h2>
+          <div className="mt-4 space-y-3">
+            <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-3">
+              <p className="text-xs text-blue-700">Total Notifications Sent</p>
+              <p className="mt-1 text-2xl font-bold text-blue-900">{notifications.length}</p>
+            </div>
+            <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
+              <p className="inline-flex items-center gap-2 font-semibold">
+                <FiUsers />
+                Active Teachers: {teachersCount}
+              </p>
+              <p className="mt-1 inline-flex items-center gap-2 font-semibold">
+                <FiUsers />
+                Active Students: {studentsCount}
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
 
+      <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm">
+        <h2 className="text-lg font-semibold text-gray-900">Sent Notifications</h2>
+        <div className="mt-4 overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="border-b text-left">
+                <th className="py-2 pr-3">Title</th>
+                <th className="py-2 pr-3">Audience</th>
+                <th className="py-2 pr-3">Message</th>
+                <th className="py-2 pr-3">Date</th>
+                <th className="py-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {notifications.map((item) => (
+                <tr key={item.id} className="border-b last:border-b-0">
+                  <td className="py-2 pr-3 font-semibold text-gray-900">{item.title}</td>
+                  <td className="py-2 pr-3">
+                    <span className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">
+                      <FiBell />
+                      {getAudienceLabel(item.audience)}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-3 text-gray-700">{item.message}</td>
+                  <td className="py-2 text-gray-500">
+                    {item.createdAt ? new Date(item.createdAt).toLocaleString() : "-"}
+                  </td>
+                  <td className="py-2">
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteMessage(item)}
+                      disabled={deletingMessageId === item.id}
+                      className="rounded-lg border border-red-200 bg-red-50 p-2 text-red-600 hover:bg-red-100 disabled:opacity-60"
+                      title="Delete message"
+                    >
+                      <FiTrash2 />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {loading && <p className="pt-4 text-sm text-gray-500">Loading notifications...</p>}
+          {!loading && notifications.length === 0 && (
+            <p className="pt-4 text-sm text-gray-500">No notifications sent yet.</p>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

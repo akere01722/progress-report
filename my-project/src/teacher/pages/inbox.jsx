@@ -1,276 +1,240 @@
-import React, { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { FiArrowLeft, FiInbox, FiRefreshCw, FiSearch, FiTrash2 } from "react-icons/fi";
+import { toast } from "react-toastify";
 import {
-  FiInbox,
-  FiSend,
-  FiEdit2,
-  FiArrowLeft,
-  FiSearch,
-} from "react-icons/fi";
+  deleteNotificationForRole,
+  fetchNotificationsForRole,
+  getAudienceLabel,
+  markNotificationRead,
+} from "../../lib/notificationsWorkflow";
 
-// eslint-disable-next-line no-unused-vars
-const TabButton = ({ icon: Icon, label, value, active, onClick }) => {
-  return (
-    <button
-      onClick={() => onClick(value)}
-      className={`w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition ${
-        active ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-700"
-      }`}
-    >
-      <Icon /> {label}
-    </button>
-  );
+const readUserData = () => {
+  try {
+    const raw = localStorage.getItem("userData");
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
 };
 
 export default function TeacherAdminInbox() {
-  const [activeTab, setActiveTab] = useState("inbox"); // inbox | sent | compose
-  const [selectedMessage, setSelectedMessage] = useState(null);
+  const userData = useMemo(() => readUserData(), []);
   const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [deletingId, setDeletingId] = useState("");
+  const [messages, setMessages] = useState([]);
+  const [selectedMessage, setSelectedMessage] = useState(null);
 
-  // compose fields
-  const [to, setTo] = useState("Admin Office");
-  const [subject, setSubject] = useState("");
-  const [body, setBody] = useState("");
+  const loadMessages = useCallback(
+    async (isManualRefresh = false) => {
+      if (!userData?.id) {
+        setLoading(false);
+        return;
+      }
 
-  /* MOCK DATA */
-  const [inboxMessages] = useState([
-    {
-      id: 1,
-      type: "inbox",
-      from: "Admin Office",
-      subject: "Submit CA Marks",
-      body: "Please upload CA marks for CSC201 before Friday.",
-      date: "2026-01-22",
-      unread: true,
+      try {
+        if (isManualRefresh) setRefreshing(true);
+        else setLoading(true);
+
+        const rows = await fetchNotificationsForRole("teacher", userData.id, { limit: 200 });
+        setMessages(Array.isArray(rows) ? rows : []);
+      } catch (error) {
+        toast.error(error?.message || "Failed to load inbox.");
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
     },
-    {
-      id: 2,
-      type: "inbox",
-      from: "Admin Office",
-      subject: "Exam Schedule",
-      body: "Exam timetable has been released for Semester 1.",
-      date: "2026-01-18",
-      unread: false,
-    },
-  ]);
+    [userData?.id]
+  );
 
-  // ✅ Sent tab is for viewing messages you sent OR replies you sent
-  const [sentMessages, setSentMessages] = useState([
-    {
-      id: 3,
-      type: "sent",
-      to: "Admin Office",
-      subject: "CA Uploaded",
-      body: "CSC201 CA marks have been uploaded successfully.",
-      date: "2026-01-20",
-    },
-  ]);
+  useEffect(() => {
+    loadMessages(false);
+  }, [loadMessages]);
 
-  const list = useMemo(() => {
-    const source = activeTab === "sent" ? sentMessages : inboxMessages;
+  const filteredMessages = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return source;
+    if (!q) return messages;
 
-    return source.filter((m) => {
-      const who = activeTab === "sent" ? m.to : m.from;
-      return (
-        who.toLowerCase().includes(q) ||
-        m.subject.toLowerCase().includes(q) ||
-        m.body.toLowerCase().includes(q)
+    return messages.filter((item) =>
+      `${item.title} ${item.message} ${item.audience}`.toLowerCase().includes(q)
+    );
+  }, [messages, query]);
+
+  const openMessage = async (item) => {
+    setSelectedMessage(item);
+    if (item.isRead || !userData?.id || !item.messageId) return;
+
+    try {
+      await markNotificationRead({
+        messageId: item.messageId,
+        role: "teacher",
+        userId: userData.id,
+      });
+      setMessages((prev) =>
+        prev.map((row) =>
+          row.id === item.id ? { ...row, isRead: true, readAt: new Date().toISOString() } : row
+        )
       );
-    });
-  }, [activeTab, inboxMessages, sentMessages, query]);
-
-  const resetView = (tab) => {
-    setActiveTab(tab);
-    setSelectedMessage(null);
-    setQuery("");
+      setSelectedMessage((prev) =>
+        prev && prev.id === item.id ? { ...prev, isRead: true, readAt: new Date().toISOString() } : prev
+      );
+    } catch (error) {
+      toast.error(error?.message || "Failed to mark notification as read.");
+    }
   };
 
-  const openMessage = (msg) => setSelectedMessage(msg);
+  const handleDelete = async (item, closeSelected = false) => {
+    if (!item?.id || !userData?.id) return;
 
-  const sendNewMessage = () => {
-    if (!subject.trim() || !body.trim()) return alert("Please add subject and message.");
-    const newMsg = {
-      id: Date.now(),
-      type: "sent",
-      to: to || "Admin Office",
-      subject: subject.trim(),
-      body: body.trim(),
-      date: new Date().toISOString().slice(0, 10),
-    };
-    setSentMessages((prev) => [newMsg, ...prev]);
-    setSubject("");
-    setBody("");
-    resetView("sent");
-    setSelectedMessage(newMsg);
+    try {
+      setDeletingId(item.id);
+      await deleteNotificationForRole({
+        recipientRowId: item.id,
+        role: "teacher",
+        userId: userData.id,
+      });
+
+      setMessages((prev) => prev.filter((row) => row.id !== item.id));
+      if (closeSelected) setSelectedMessage(null);
+      toast.success("Message deleted.");
+    } catch (error) {
+      toast.error(error?.message || "Failed to delete message.");
+    } finally {
+      setDeletingId("");
+    }
   };
 
-  const sendReply = () => {
-    if (!selectedMessage || activeTab !== "inbox") return;
-    if (!body.trim()) return alert("Type your reply first.");
-    const replyMsg = {
-      id: Date.now(),
-      type: "sent",
-      to: selectedMessage.from || "Admin Office",
-      subject: `Re: ${selectedMessage.subject}`,
-      body: body.trim(),
-      date: new Date().toISOString().slice(0, 10),
-      replyToId: selectedMessage.id,
-    };
-    setSentMessages((prev) => [replyMsg, ...prev]);
-    setBody("");
-    resetView("sent");
-    setSelectedMessage(replyMsg);
-  };
+  if (!userData?.id) {
+    return (
+      <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+        User session missing. Please sign in again.
+      </div>
+    );
+  }
 
   return (
-    <div className="p-8 bg-gray-50 min-h-screen">
-      {/* PAGE HEADER */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold">Inbox</h1>
-        <p className="text-sm text-gray-500">Teacher ↔ Admin Communication</p>
+    <div className="w-full space-y-6">
+      <div className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Inbox</h1>
+            <p className="mt-1 text-sm text-gray-500">Notifications from admin.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => loadMessages(true)}
+            disabled={refreshing}
+            className="inline-flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-60"
+          >
+            <FiRefreshCw />
+            {refreshing ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
       </div>
 
-      {/* SEARCH */}
-      <div className="mb-6">
+      <div className="mb-2">
         <div className="flex gap-2">
           <input
             type="text"
             placeholder="Search messages..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="flex-1 border p-3 rounded-lg"
+            className="flex-1 rounded-lg border border-gray-200 p-3 outline-none focus:ring-2 focus:ring-blue-500"
           />
-          <button 
+          <button
+            type="button"
             onClick={() => {
-              // Search is already reactive via query state, this provides visual feedback
-              const searchInput = document.querySelector('input[placeholder="Search messages..."]');
-              if (searchInput) searchInput.focus();
+              const input = document.querySelector('input[placeholder="Search messages..."]');
+              if (input) input.focus();
             }}
-            className="bg-blue-600 text-white px-4 py-2 rounded-lg"
+            className="rounded-lg bg-blue-600 px-4 py-2 text-white"
           >
             <FiSearch />
           </button>
         </div>
       </div>
 
-      {/* TABS */}
-      <div className="flex gap-4 mb-6">
-        <TabButton icon={FiInbox} label="Inbox" value="inbox" active={activeTab === "inbox"} onClick={resetView} />
-        <TabButton icon={FiSend} label="Sent" value="sent" active={activeTab === "sent"} onClick={resetView} />
-        <TabButton icon={FiEdit2} label="Compose" value="compose" active={activeTab === "compose"} onClick={resetView} />
-      </div>
+      <div className="grid min-h-[500px] grid-cols-1 rounded-xl bg-white shadow md:grid-cols-3">
+        <div className="space-y-2 border-r p-4">
+          {loading && <p className="text-sm text-gray-500">Loading messages...</p>}
+          {!loading &&
+            filteredMessages.map((item) => (
+              <div key={item.id} className="rounded-lg p-2 transition hover:bg-blue-50">
+                <div className="flex items-start gap-2">
+                  <button
+                    type="button"
+                    onClick={() => openMessage(item)}
+                    className="flex-1 text-left"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="font-semibold text-gray-900">{item.title}</p>
+                      {!item.isRead && <span className="mt-1 h-2 w-2 rounded-full bg-blue-600" />}
+                    </div>
+                    <p className="mt-1 truncate text-sm text-gray-600">{item.message}</p>
+                    <p className="mt-1 text-xs text-gray-400">
+                      {item.createdAt ? new Date(item.createdAt).toLocaleString() : "-"}
+                    </p>
+                  </button>
 
-      {/* CONTENT */}
-      <div className="bg-white rounded-xl shadow grid grid-cols-1 md:grid-cols-3 min-h-[500px]">
-        {/* MESSAGE LIST */}
-        {(activeTab === "inbox" || activeTab === "sent") && (
-          <div className="border-r p-4 space-y-2">
-            {list.map((msg) => (
-              <button
-                key={msg.id}
-                onClick={() => openMessage(msg)}
-                className="w-full text-left p-3 rounded-lg hover:bg-blue-50 transition"
-              >
-                <div className="flex justify-between">
-                  <span className="font-semibold">
-                    {activeTab === "sent" ? msg.to : msg.from}
-                  </span>
-                  <span className="text-xs text-gray-400">{msg.date}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(item, selectedMessage?.id === item.id)}
+                    disabled={deletingId === item.id}
+                    className="rounded-lg border border-red-200 bg-red-50 p-2 text-red-600 hover:bg-red-100 disabled:opacity-60"
+                    title="Delete message"
+                  >
+                    <FiTrash2 />
+                  </button>
                 </div>
-                <p className="text-sm text-gray-600 truncate">{msg.subject}</p>
-                {msg.unread && activeTab === "inbox" && (
-                  <span className="inline-block w-2 h-2 bg-blue-600 rounded-full ml-2"></span>
-                )}
-              </button>
+              </div>
             ))}
-          </div>
-        )}
+          {!loading && filteredMessages.length === 0 && (
+            <div className="rounded-lg border border-dashed border-gray-200 p-4 text-sm text-gray-500">
+              No messages found.
+            </div>
+          )}
+        </div>
 
-        {/* MESSAGE VIEW / COMPOSE */}
-        <div className="md:col-span-2 p-6">
-          {/* MESSAGE VIEW */}
-          {selectedMessage && activeTab !== "compose" && (
+        <div className="p-6 md:col-span-2">
+          {selectedMessage ? (
             <div>
               <button
+                type="button"
                 onClick={() => setSelectedMessage(null)}
-                className="flex items-center gap-2 text-blue-600 mb-4"
+                className="mb-4 inline-flex items-center gap-2 text-blue-600"
               >
                 <FiArrowLeft />
                 Back
               </button>
-              <h2 className="text-xl font-bold">{selectedMessage.subject}</h2>
-              <p className="text-sm text-gray-500 mb-2">
-                {activeTab === "inbox"
-                  ? `From: ${selectedMessage.from}`
-                  : `To: ${selectedMessage.to}`}{" "}
-                • {selectedMessage.date}
+
+              <h2 className="text-xl font-bold text-gray-900">{selectedMessage.title}</h2>
+              <p className="mt-1 text-sm text-gray-500">
+                Audience: {getAudienceLabel(selectedMessage.audience)} |{" "}
+                {selectedMessage.createdAt
+                  ? new Date(selectedMessage.createdAt).toLocaleString()
+                  : "-"}
               </p>
-              <div className="bg-gray-50 p-4 rounded-lg mb-6">
-                {selectedMessage.body}
+              <div className="mt-4 rounded-lg bg-gray-50 p-4 text-gray-700">
+                {selectedMessage.message}
               </div>
-              {/* REPLY */}
-              {activeTab === "inbox" && (
-                <div>
-                  <h3 className="font-semibold mb-2">Reply</h3>
-                  <textarea
-                    value={body}
-                    onChange={(e) => setBody(e.target.value)}
-                    className="border p-3 rounded-lg w-full mb-3"
-                    rows="4"
-                    placeholder="Type your reply..."
-                  />
-                  <button
-                    onClick={sendReply}
-                    className="bg-blue-600 text-white px-6 py-2 rounded-lg font-semibold"
-                  >
-                    Send Reply
-                  </button>
-                </div>
-              )}
+              <button
+                type="button"
+                onClick={() => handleDelete(selectedMessage, true)}
+                disabled={deletingId === selectedMessage.id}
+                className="mt-4 inline-flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-100 disabled:opacity-60"
+              >
+                <FiTrash2 />
+                {deletingId === selectedMessage.id ? "Deleting..." : "Delete Message"}
+              </button>
             </div>
-          )}
-
-          {/* COMPOSE */}
-          {activeTab === "compose" && (
-            <div>
-              <h2 className="text-xl font-bold mb-4">New Message</h2>
-              <div className="space-y-4">
-                <input
-                  type="text"
-                  placeholder="To"
-                  value={to}
-                  onChange={(e) => setTo(e.target.value)}
-                  className="border p-3 rounded-lg w-full"
-                />
-                <input
-                  type="text"
-                  placeholder="Subject"
-                  value={subject}
-                  onChange={(e) => setSubject(e.target.value)}
-                  className="border p-3 rounded-lg w-full"
-                />
-                <textarea
-                  value={body}
-                  onChange={(e) => setBody(e.target.value)}
-                  rows="6"
-                  placeholder="Write message..."
-                  className="border p-3 rounded-lg w-full"
-                />
-                <button
-                  onClick={sendNewMessage}
-                  className="bg-green-600 text-white px-6 py-2 rounded-lg font-semibold flex items-center gap-2"
-                >
-                  <FiSend />
-                  Send Message
-                </button>
-              </div>
-            </div>
-          )}
-
-          {!selectedMessage && activeTab !== "compose" && (
-            <div className="text-gray-400 flex items-center justify-center h-full">
-              Select a message to view
+          ) : (
+            <div className="flex h-full items-center justify-center text-gray-400">
+              <span className="inline-flex items-center gap-2">
+                <FiInbox />
+                Select a message to view
+              </span>
             </div>
           )}
         </div>

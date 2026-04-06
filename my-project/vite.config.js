@@ -1,11 +1,10 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// https://vite.dev/config/
 export default defineConfig({
+  base: '/', // ✅ ADD THIS LINE
   plugins: [react()],
   build: {
-    // Improve chunking for better loading
     rollupOptions: {
       output: {
         manualChunks: {
@@ -16,10 +15,8 @@ export default defineConfig({
       },
     },
   },
-  // Ensure proper error handling for production
   server: {
     fs: {
-      // Allow serving files from one level up to the project root
       allow: ['..'],
     },
   },

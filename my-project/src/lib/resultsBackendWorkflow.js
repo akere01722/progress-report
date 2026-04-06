@@ -1550,6 +1550,7 @@ const deleteEntriesForSubmission = async (table, submissionId) => {
 };
 
 const insertEntriesRows = async ({
+
   table,
   submissionId,
   marks,
@@ -1570,10 +1571,13 @@ const insertEntriesRows = async ({
       .map((row) => {
         const mark = clampMark(row?.mark, type);
         if (mark === null) return null;
+
         return {
-          studentId: safeText(row?.studentId),
-          matricule: safeText(row?.matricule),
-          studentName: safeText(row?.name || row?.studentName || row?.full_name),
+          studentId: safeText(row?.studentId || row?.student_id),
+          matricule: safeText(row?.matricule || row?.student_matricule),
+          studentName: safeText(
+            row?.name || row?.studentName || row?.student_name || row?.full_name
+          ),
           program: safeText(row?.program),
           level: safeText(row?.level),
           facultyId: safeText(row?.facultyId || row?.faculty_id),
@@ -1581,133 +1585,47 @@ const insertEntriesRows = async ({
           mark,
         };
       })
-      .filter((row) => row && row.matricule && row.studentName),
-    (row) => normalizeId(row.matricule || row.studentId)
+      .filter((row) => row && (row.matricule || row.studentId || row.studentName)),
+    (row) => normalizeId(row.matricule || row.studentId || row.studentName)
   );
 
   if (rows.length === 0) {
     throw new Error("No valid student marks to save.");
   }
 
-  const payloadSets = [
-    rows.map((row) => ({
-      submission_id: submissionId,
-      submission_ref: submissionId,
-      report_id: submissionId,
-      submission: submissionId,
-      result_submission: submissionId,
-      result_submission_id: submissionId,
-      student_id: parseNumericId(row.studentId) || row.studentId || null,
-      student_matricule: row.matricule,
-      student_name: row.studentName,
-      faculty,
-      department,
-      faculty_id: row.facultyId || normalizedFacultyId || null,
-      department_id: row.departmentId || normalizedDepartmentId || null,
-      class_name: className || null,
-      subject,
-      program: row.program,
-      level: row.level || null,
-      mark: row.mark,
-      assessment_type: type,
-    })),
-    rows.map((row) => ({
-      submission_id: submissionId,
-      submission_ref: submissionId,
-      report_id: submissionId,
-      submission: submissionId,
-      result_submission: submissionId,
-      result_submission_id: submissionId,
-      student_id: parseNumericId(row.studentId) || row.studentId || null,
-      matricule: row.matricule,
-      student_name: row.studentName,
-      faculty,
-      department,
-      faculty_id: row.facultyId || normalizedFacultyId || null,
-      department_id: row.departmentId || normalizedDepartmentId || null,
-      class_name: className || null,
-      subject,
-      program: row.program,
-      level: row.level || null,
-      score: row.mark,
-      assessment_type: type,
-    })),
-    rows.map((row) => ({
-      submission_id: submissionId,
-      submission_ref: submissionId,
-      report_id: submissionId,
-      submission: submissionId,
-      result_submission: submissionId,
-      result_submission_id: submissionId,
-      student_id: parseNumericId(row.studentId) || row.studentId || null,
-      matricule: row.matricule,
-      student_name: row.studentName,
-      faculty,
-      department,
-      faculty_id: row.facultyId || normalizedFacultyId || null,
-      department_id: row.departmentId || normalizedDepartmentId || null,
-      class_name: className || null,
-      subject,
-      program: row.program,
-      level: row.level || null,
-      ca_score: type === "CA" ? row.mark : null,
-      exam_score: type === "EXAM" ? row.mark : null,
-      assessment_type: type,
-    })),
-    rows.map((row) => ({
-      result_submission_id: submissionId,
-      submission_id: submissionId,
-      submission_ref: submissionId,
-      report_id: submissionId,
-      submission: submissionId,
-      result_submission: submissionId,
-      student_id: parseNumericId(row.studentId) || row.studentId || null,
-      matricule: row.matricule,
-      student_name: row.studentName,
-      faculty,
-      department,
-      faculty_id: row.facultyId || normalizedFacultyId || null,
-      department_id: row.departmentId || normalizedDepartmentId || null,
-      class_name: className || null,
-      subject,
-      ca_score: type === "CA" ? row.mark : null,
-      exam_score: type === "EXAM" ? row.mark : null,
-      assessment_type: type,
-    })),
-    rows.map((row) => ({
-      result_submission_id: submissionId,
-      submission_id: submissionId,
-      submission_ref: submissionId,
-      report_id: submissionId,
-      submission: submissionId,
-      result_submission: submissionId,
-      student_matricule: row.matricule,
-      student_name: row.studentName,
-      mark: row.mark,
-    })),
-    rows.map((row) => ({
-      submission_id: submissionId,
-      submission_ref: submissionId,
-      report_id: submissionId,
-      submission: submissionId,
-      result_submission: submissionId,
-      result_submission_id: submissionId,
-      student_matricule: row.matricule,
-      student_name: row.studentName,
-      mark: row.mark,
-    })),
-    rows.map((row) => ({
-      submission_id: submissionId,
-      submission_ref: submissionId,
-      report_id: submissionId,
-      submission: submissionId,
-      result_submission: submissionId,
-      result_submission_id: submissionId,
-      matricule: row.matricule,
-      student_name: row.studentName,
-      score: row.mark,
-    })),
-  ];
+  let candidateRows = rows.map((row) => ({
+    submission_id: submissionId,
+    result_submission_id: submissionId,
+    submission_ref: submissionId,
+    report_id: submissionId,
+    submission: submissionId,
+    result_submission: submissionId,
+
+    student_id: parseNumericId(row.studentId) || row.studentId || null,
+    student_matricule: row.matricule || "UNKNOWN",
+    matricule: row.matricule || "UNKNOWN",
+    student_name: row.studentName || "Student",
+
+    faculty: faculty || null,
+    department: department || null,
+    faculty_id: row.facultyId || normalizedFacultyId || null,
+    department_id: row.departmentId || normalizedDepartmentId || null,
+
+    class_name: className || null,
+    subject: subject || null,
+    program: row.program || null,
+    level: row.level || null,
+
+    assessment_type: type,
+
+    ca_score: type === "CA" ? row.mark : null,
+    exam_score: type === "EXAM" ? row.mark : null,
+    final_score: null,
+    remark: null,
+
+    mark: row.mark,
+    score: row.mark,
+  }));
 
   const withRequiredFallbacks = (rowsInput, requiredColumn) => {
     let applied = false;
@@ -1715,79 +1633,93 @@ const insertEntriesRows = async ({
     const nextRows = rowsInput.map((entry) => {
       const row = { ...entry };
       const current = row[requiredColumn];
+
       if (current !== undefined && current !== null && safeText(current) !== "") {
         return row;
       }
 
       let fallback;
+
       switch (requiredColumn) {
         case "submission_id":
         case "result_submission_id":
+        case "submission_ref":
+        case "report_id":
+        case "submission":
+        case "result_submission":
           fallback = submissionId;
           break;
+
         case "student_matricule":
         case "matricule":
           fallback = row.student_matricule || row.matricule || "UNKNOWN";
           break;
+
         case "student_name":
         case "full_name":
         case "name":
-          fallback = row.student_name || row.full_name || row.name || "Student";
+          fallback = row.student_name || "Student";
           break;
+
         case "mark":
         case "score": {
-          const parsed = parseScore(row.mark ?? row.score ?? row.ca_score ?? row.exam_score);
+          const parsed = parseScore(
+            row.mark ?? row.score ?? row.ca_score ?? row.exam_score
+          );
           fallback = parsed === null ? undefined : parsed;
           break;
         }
+
         case "ca_score": {
           const parsed = parseScore(row.mark ?? row.score ?? row.ca_score);
-          fallback = type === "CA" ? (parsed === null ? undefined : parsed) : 0;
+          fallback = type === "CA" ? (parsed === null ? undefined : parsed) : null;
           break;
         }
+
         case "exam_score": {
           const parsed = parseScore(row.mark ?? row.score ?? row.exam_score);
-          fallback = type === "EXAM" ? (parsed === null ? undefined : parsed) : 0;
+          fallback = type === "EXAM" ? (parsed === null ? undefined : parsed) : null;
           break;
         }
+
         case "assessment_type":
         case "type":
         case "component":
           fallback = type;
           break;
+
         case "faculty":
-          fallback = faculty || "Unknown";
+          fallback = faculty || null;
           break;
+
         case "department":
-          fallback = department || "Unknown";
+          fallback = department || null;
           break;
+
         case "faculty_id":
           fallback = row.faculty_id || normalizedFacultyId || null;
           break;
+
         case "department_id":
           fallback = row.department_id || normalizedDepartmentId || null;
           break;
-        case "program":
-          fallback = row.program || "General";
-          break;
-        case "level":
-          fallback = row.level || "N/A";
-          break;
+
         case "class_name":
         case "class":
-          fallback = className || "Class";
+          fallback = className || null;
           break;
+
         case "subject":
         case "subject_name":
-          fallback = subject || "Subject";
+          fallback = subject || null;
           break;
+
         default:
           fallback = undefined;
       }
 
       if (
         fallback === undefined ||
-        fallback === null ||
         (typeof fallback === "string" && safeText(fallback) === "")
       ) {
         return row;
@@ -1802,773 +1734,74 @@ const insertEntriesRows = async ({
   };
 
   let lastError = null;
-  for (const payloadRows of payloadSets) {
-    let candidateRows = payloadRows.map((row) => ({ ...row }));
 
-    for (let attempt = 0; attempt < 24; attempt += 1) {
-      const { error } = await supabase.from(table).insert(candidateRows);
-      if (!error) return;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const { error } = await supabase.from(table).insert(candidateRows);
 
-      if (isStudentIdTypeMismatch(error)) {
-        candidateRows = candidateRows.map((row) => {
-          const next = { ...row };
-          delete next.student_id;
-          return next;
-        });
-        lastError = error;
-        continue;
-      }
+    if (!error) return;
 
-      if (isMissingColumn(error)) {
-        lastError = error;
-        const missingColumn = extractMissingColumnName(error);
-        if (!missingColumn) break;
-
-        const hasColumn = candidateRows.some((row) =>
-          Object.prototype.hasOwnProperty.call(row, missingColumn)
-        );
-        if (!hasColumn) break;
-
-        candidateRows = candidateRows.map((row) => {
-          const next = { ...row };
-          delete next[missingColumn];
-          return next;
-        });
-        continue;
-      }
-
-      if (error?.code === "23502") {
-        lastError = error;
-        const requiredColumn = extractNotNullColumnName(error);
-        if (!requiredColumn) break;
-        const { rows: nextRows, applied } = withRequiredFallbacks(candidateRows, requiredColumn);
-        if (!applied) break;
-        candidateRows = nextRows;
-        continue;
-      }
-
-      if (
-        error?.code === "22P02" || // invalid text representation / type cast
-        error?.code === "42804" || // datatype mismatch
-        error?.code === "23503" || // foreign key violation
-        error?.code === "23514" // check violation
-      ) {
-        lastError = error;
-        break;
-      }
-
-      throw toFriendlyResultsError(error, table);
+    if (isStudentIdTypeMismatch(error)) {
+      candidateRows = candidateRows.map((row) => {
+        const next = { ...row };
+        delete next.student_id;
+        return next;
+      });
+      lastError = error;
+      continue;
     }
+
+    if (isMissingColumn(error)) {
+      lastError = error;
+      const missingColumn = extractMissingColumnName(error);
+      if (!missingColumn) break;
+
+      const hasColumn = candidateRows.some((row) =>
+        Object.prototype.hasOwnProperty.call(row, missingColumn)
+      );
+      if (!hasColumn) break;
+
+      candidateRows = candidateRows.map((row) => {
+        const next = { ...row };
+        delete next[missingColumn];
+        return next;
+      });
+      continue;
+    }
+
+    if (error?.code === "23502") {
+      lastError = error;
+      const requiredColumn = extractNotNullColumnName(error);
+      if (!requiredColumn) break;
+
+      const { rows: nextRows, applied } = withRequiredFallbacks(candidateRows, requiredColumn);
+      if (!applied) break;
+
+      candidateRows = nextRows;
+      continue;
+    }
+
+    if (
+      error?.code === "22P02" ||
+      error?.code === "42804" ||
+      error?.code === "23503" ||
+      error?.code === "23514"
+    ) {
+      lastError = error;
+      break;
+    }
+
+    throw toFriendlyResultsError(error, table);
   }
 
   if (lastError) {
     const details = [lastError?.message, lastError?.details, lastError?.hint]
       .filter(Boolean)
       .join(" | ");
+
     throw new Error(
       details
         ? `Unable to insert marks. ${details}`
-        : "Unable to insert marks. Check result_entries columns (submission_id, matricule/student_name, score fields)."
+        : "Unable to insert marks. Check result_entries columns."
     );
   }
-};
-
-export const saveResultSubmission = async ({
-  faculty = "",
-  facultyId = "",
-  department = "",
-  departmentId = "",
-  className = "",
-  subject = "",
-  subjectId = "",
-  academicYear = "",
-  semester = "",
-  assessmentType = "CA",
-  teacherId = "",
-  teacherName = "",
-  teacherStaffId = "",
-  marks = [],
-}) => {
-  ensureBackend();
-
-  const now = toIsoNow();
-  const type = normalizeAssessmentType(assessmentType);
-  const resolvedForeignKeys = await resolveSubmissionForeignKeys({
-    facultyId,
-    faculty,
-    departmentId,
-    department,
-    subjectId,
-    subject,
-  });
-  const effectiveFacultyId = safeText(resolvedForeignKeys?.facultyId || facultyId);
-  const effectiveDepartmentId = safeText(resolvedForeignKeys?.departmentId || departmentId);
-  const effectiveSubjectId = safeText(resolvedForeignKeys?.subjectId || subjectId);
-  const period = await ensureAcademicPeriod({ academicYear, semester });
-
-  const submissions = await fetchMappedSubmissions({
-    faculty,
-    facultyId: effectiveFacultyId,
-    academicYear: period.academicYear,
-    semester: period.semester,
-  });
-
-  const existing = findMatchingSubmission({
-    submissions,
-    faculty,
-    facultyId: effectiveFacultyId,
-    academicYear: period.academicYear,
-    semester: period.semester,
-    className,
-    subject,
-    assessmentType: type,
-  });
-
-  let submissionId = existing?.id || "";
-  let statusSyncedToSubmitted = false;
-
-  if (submissionId) {
-    await updateSubmissionStatusToSubmitted({
-      submissionId,
-      teacherId,
-      teacherName,
-      teacherStaffId,
-      now,
-    });
-    statusSyncedToSubmitted = true;
-  } else {
-    submissionId = await insertSubmissionRecord({
-      faculty,
-      facultyId: effectiveFacultyId,
-      department,
-      departmentId: effectiveDepartmentId,
-      className,
-      subject,
-      subjectId: effectiveSubjectId,
-      academicYear: period.academicYear,
-      semester: period.semester,
-      assessmentType: type,
-      teacherId,
-      teacherName,
-      teacherStaffId,
-      periodId: period.id,
-      now,
-    });
-
-    if (!submissionId) {
-      const refreshed = await fetchMappedSubmissions({
-        faculty,
-        facultyId: effectiveFacultyId,
-        academicYear: period.academicYear,
-        semester: period.semester,
-      });
-      submissionId =
-        findMatchingSubmission({
-          submissions: refreshed,
-          faculty,
-          facultyId: effectiveFacultyId,
-          academicYear: period.academicYear,
-          semester: period.semester,
-          className,
-          subject,
-          assessmentType: type,
-        })?.id || "";
-
-      if (!submissionId) {
-        submissionId =
-          findMatchingSubmission({
-            submissions: refreshed,
-            faculty,
-            facultyId: effectiveFacultyId,
-            academicYear: period.academicYear,
-            semester: period.semester,
-            className,
-            subject,
-            assessmentType: type,
-            ignoreAssessmentType: true,
-          })?.id || "";
-      }
-    }
-  }
-
-  if (!submissionId) {
-    throw new Error("Unable to resolve submission row. Check unique constraints in result_submissions.");
-  }
-
-  await syncSubmissionScopeFields({
-    submissionId,
-    faculty,
-    facultyId: effectiveFacultyId,
-    department,
-    departmentId: effectiveDepartmentId,
-    className,
-    subject,
-    subjectId: effectiveSubjectId,
-    academicYear: period.academicYear,
-    semester: period.semester,
-    periodId: period.id,
-  });
-
-  // If we resolved an existing row after insert fallback (for example duplicate keys),
-  // ensure admin sees it as a fresh teacher submission.
-  if (!statusSyncedToSubmitted) {
-    await updateSubmissionStatusToSubmitted({
-      submissionId,
-      teacherId,
-      teacherName,
-      teacherStaffId,
-      now,
-    });
-  }
-
-  const entriesTable = await resolveEntriesTable();
-  await deleteEntriesForSubmission(entriesTable, submissionId);
-  await insertEntriesRows({
-    table: entriesTable,
-    submissionId,
-    marks,
-    assessmentType: type,
-    faculty,
-    department,
-    facultyId: effectiveFacultyId,
-    departmentId: effectiveDepartmentId,
-    className,
-    subject,
-  });
-
-  const latest = await fetchMappedSubmissions({
-    faculty,
-    facultyId: effectiveFacultyId,
-    academicYear: period.academicYear,
-    semester: period.semester,
-  });
-
-  return latest.find((item) => item.id === submissionId) || null;
-};
-
-export const reviewResultSubmission = async ({
-  submissionId,
-  status,
-  reviewerName = "",
-  comment = "",
-}) => {
-  ensureBackend();
-  const now = toIsoNow();
-  const targetStatus = normalizeStatus(status) === "approved" ? "approved" : "rejected";
-
-  const payloads = [
-    {
-      status: targetStatus,
-      review_comment: safeText(comment),
-      reviewed_at: now,
-      updated_at: now,
-    },
-    {
-      status: targetStatus,
-      admin_note: safeText(comment),
-      reviewed_at: now,
-      updated_at: now,
-    },
-    {
-      status: targetStatus,
-      comment: safeText(comment),
-      reviewed_at: now,
-    },
-    { status: targetStatus },
-  ];
-
-  for (const payload of payloads) {
-    const { error } = await supabase.from("result_submissions").update(payload).eq("id", submissionId);
-    if (!error) return { id: submissionId, status: targetStatus, reviewerName, comment };
-    if (isMissingColumn(error)) continue;
-    throw toFriendlyResultsError(error, "result_submissions");
-  }
-
-  throw new Error("Unable to review submission. Check review columns in result_submissions.");
-};
-
-const mapPublicationRow = ({ row, refs }) => {
-  const periodId = safeText(row?.academic_period_id || row?.period_id || row?.periodId);
-  const linkedPeriod = periodId ? refs.periodById.get(periodId) : null;
-
-  let facultyId = safeText(row?.faculty_id || row?.facultyId);
-  const explicitFaculty = safeText(row?.faculty || row?.faculty_name);
-  if (!facultyId && explicitFaculty) {
-    facultyId = refs.facultyMaps.byName.get(normalizeId(explicitFaculty))?.id || "";
-  }
-
-  return {
-    id: safeText(row?.id),
-    facultyId,
-    faculty: explicitFaculty || refs.facultyMaps.byId.get(facultyId)?.name || "",
-    academicYear:
-      safeText(row?.academic_year || row?.year || row?.academicYear) ||
-      linkedPeriod?.academicYear ||
-      "",
-    semester: normalizeSemester(row?.semester || row?.term) || linkedPeriod?.semester || "",
-    status: normalizeStatus(row?.status || "published"),
-    publishedAt: row?.published_at || row?.created_at || null,
-    raw: row,
-  };
-};
-
-const isPublicationMatch = ({
-  publication,
-  faculty = "",
-  facultyId = "",
-  academicYear = "",
-  semester = "",
-}) => {
-  if (safeText(facultyId) && safeText(publication.facultyId)) {
-    if (safeText(publication.facultyId) !== safeText(facultyId)) return false;
-  } else if (safeText(faculty) && safeText(publication.faculty)) {
-    if (normalizeId(publication.faculty) !== normalizeId(faculty)) return false;
-  }
-
-  if (academicYear && safeText(publication.academicYear)) {
-    if (normalizeId(publication.academicYear) !== normalizeId(academicYear)) return false;
-  }
-
-  if (semester && safeText(publication.semester)) {
-    if (
-      normalizeId(normalizeSemester(publication.semester)) !==
-      normalizeId(normalizeSemester(semester))
-    ) {
-      return false;
-    }
-  }
-
-  return true;
-};
-
-export const fetchPublishedPeriodsForFaculty = async ({ faculty = "", facultyId = "" } = {}) => {
-  ensureBackend();
-  const refs = await buildResultRefs();
-  const publicationRows = await readRows("result_publications");
-  const mapped = publicationRows
-    .map((row) => mapPublicationRow({ row, refs }))
-    .filter((row) => row.status === "published")
-    .filter((row) => isPublicationMatch({ publication: row, faculty, facultyId }));
-
-  const deduped = dedupeBy(
-    mapped,
-    (row) =>
-      `${normalizeId(row.facultyId || row.faculty)}__${normalizeId(row.academicYear)}__${normalizeId(
-        normalizeSemester(row.semester)
-      )}`
-  );
-
-  return deduped.sort((a, b) => {
-    const yearA = Number(String(a.academicYear || "").slice(0, 4)) || 0;
-    const yearB = Number(String(b.academicYear || "").slice(0, 4)) || 0;
-    if (yearA !== yearB) return yearB - yearA;
-    return normalizeId(a.semester) < normalizeId(b.semester) ? 1 : -1;
-  });
-};
-
-export const publishFacultyResults = async ({
-  faculty = "",
-  facultyId = "",
-  academicYear = "",
-  semester = "",
-  adminName = "",
-}) => {
-  ensureBackend();
-  const now = toIsoNow();
-  const period = await ensureAcademicPeriod({ academicYear, semester });
-  const refs = await buildResultRefs();
-
-  const publicationRows = await readRows("result_publications");
-  const mappedPublications = publicationRows.map((row) => mapPublicationRow({ row, refs }));
-  const existing = mappedPublications.find((row) =>
-    isPublicationMatch({
-      publication: row,
-      faculty,
-      facultyId,
-      academicYear: period.academicYear,
-      semester: period.semester,
-    })
-  );
-
-  if (existing?.id) {
-    const updatePayloads = [
-      { status: "published", published_at: now, updated_at: now },
-      { status: "published", published_at: now },
-      { status: "published" },
-    ];
-
-    for (const payload of updatePayloads) {
-      const { error } = await supabase.from("result_publications").update(payload).eq("id", existing.id);
-      if (!error) return { ...existing, status: "published", publishedAt: now, adminName };
-      if (isMissingColumn(error)) continue;
-      throw toFriendlyResultsError(error, "result_publications");
-    }
-  }
-
-  const numericFacultyId = parseNumericId(facultyId);
-  const numericPeriodId = parseNumericId(period.id);
-  const payloads = [
-    {
-      faculty,
-      academic_year: period.academicYear,
-      semester: period.semester,
-      status: "published",
-      published_at: now,
-    },
-    {
-      faculty_id: numericFacultyId,
-      academic_period_id: numericPeriodId || period.id || null,
-      academic_year: period.academicYear,
-      semester: period.semester,
-      status: "published",
-      published_at: now,
-    },
-    {
-      faculty_id: numericFacultyId,
-      period_id: numericPeriodId || period.id || null,
-      status: "published",
-      published_at: now,
-    },
-  ];
-
-  for (const payload of payloads) {
-    const { data, error } = await supabase
-      .from("result_publications")
-      .insert([payload])
-      .select("*")
-      .limit(1);
-
-    if (!error) {
-      const row = Array.isArray(data) ? data[0] : null;
-      return {
-        id: safeText(row?.id),
-        facultyId: safeText(row?.faculty_id || row?.facultyId) || safeText(facultyId),
-        faculty: safeText(row?.faculty) || faculty,
-        academicYear: period.academicYear,
-        semester: period.semester,
-        status: "published",
-        publishedAt: row?.published_at || now,
-        adminName,
-      };
-    }
-
-    if (isMissingColumn(error)) continue;
-    throw toFriendlyResultsError(error, "result_publications");
-  }
-
-  throw new Error("Unable to publish faculty results. Check result_publications columns.");
-};
-
-const gradeFromTotal = (total) => {
-  if (total >= 70) return "A";
-  if (total >= 60) return "B";
-  if (total >= 50) return "C";
-  if (total >= 45) return "D";
-  if (total >= 40) return "E";
-  return "F";
-};
-
-const remarkFromGrade = (grade) => {
-  if (grade === "A") return "Excellent";
-  if (grade === "B") return "Very Good";
-  if (grade === "C") return "Good";
-  if (grade === "D" || grade === "E") return "Pass";
-  return "Fail";
-};
-
-export const fetchStudentPublishedResults = async ({
-  faculty = "",
-  facultyId = "",
-  matricule = "",
-  studentId = "",
-  academicYear = "",
-  semester = "",
-}) => {
-  ensureBackend();
-  const normalizedMatricule = normalizeId(matricule);
-  const normalizedStudentId = safeText(studentId);
-
-  const publishedPeriods = await fetchPublishedPeriodsForFaculty({ faculty, facultyId });
-  const publication =
-    publishedPeriods.find(
-      (period) =>
-        normalizeId(period.academicYear) === normalizeId(academicYear) &&
-        normalizeId(normalizeSemester(period.semester)) === normalizeId(normalizeSemester(semester))
-    ) || null;
-
-  if (!publication) {
-    return { published: false, publication: null, rows: [] };
-  }
-
-  const approvedSubmissions = (await getSubmissionsForFacultyPeriod({
-    faculty,
-    facultyId,
-    academicYear,
-    semester,
-  })).filter((submission) => normalizeStatus(submission.status) === "approved");
-
-  const grouped = new Map();
-  for (const submission of approvedSubmissions) {
-    const pairKey = `${normalizeId(submission.className)}__${normalizeId(submission.subject)}`;
-    if (!grouped.has(pairKey)) {
-      grouped.set(pairKey, {
-        className: submission.className,
-        subject: submission.subject,
-        academicYear: submission.academicYear,
-        semester: submission.semester,
-        students: new Map(),
-      });
-    }
-
-    const target = grouped.get(pairKey);
-    for (const markRow of submission.marks || []) {
-      const key = normalizeId(markRow.matricule || markRow.studentId);
-      if (!key) continue;
-      if (!target.students.has(key)) {
-        target.students.set(key, {
-          studentId: safeText(markRow.studentId),
-          matricule: safeText(markRow.matricule),
-          studentName: safeText(markRow.name),
-          ca: null,
-          exam: null,
-        });
-      }
-
-      const student = target.students.get(key);
-      if (normalizeAssessmentType(submission.assessmentType) === "CA") {
-        student.ca = parseScore(markRow.mark);
-      } else {
-        student.exam = parseScore(markRow.mark);
-      }
-    }
-  }
-
-  const rows = [];
-  for (const course of grouped.values()) {
-    for (const studentRow of course.students.values()) {
-      const isTargetStudent =
-        (normalizedMatricule && normalizeId(studentRow.matricule) === normalizedMatricule) ||
-        (normalizedStudentId && safeText(studentRow.studentId) === normalizedStudentId);
-      if (!isTargetStudent) continue;
-
-      const total =
-        Number.isFinite(studentRow.ca) && Number.isFinite(studentRow.exam)
-          ? Number(studentRow.ca) + Number(studentRow.exam)
-          : null;
-      const grade = total === null ? "" : gradeFromTotal(total);
-      const remark = total === null ? "Incomplete" : remarkFromGrade(grade);
-
-      rows.push({
-        className: course.className,
-        subject: course.subject,
-        academicYear: course.academicYear,
-        semester: course.semester,
-        studentId: studentRow.studentId,
-        matricule: studentRow.matricule,
-        studentName: studentRow.studentName,
-        ca: studentRow.ca,
-        exam: studentRow.exam,
-        total,
-        grade,
-        remark,
-      });
-    }
-  }
-
-  rows.sort((a, b) => {
-    if (a.className !== b.className) return a.className.localeCompare(b.className);
-    return a.subject.localeCompare(b.subject);
-  });
-
-  return {
-    published: true,
-    publication,
-    rows,
-  };
-};
-
-export const fetchTeacherResultContext = async ({
-  teacherUserId = "",
-  staffId = "",
-  email = "",
-} = {}) => {
-  ensureBackend();
-  const refs = await buildResultRefs();
-  const assignmentRows = await readRows("teacher_assignments");
-  const studentRows = await readRows("students");
-
-  const teacherList = refs.teacherList;
-  const targetId = safeText(teacherUserId);
-  const targetStaffId = normalizeId(staffId);
-  const targetEmail = normalizeId(email);
-
-  const teacher =
-    teacherList.find((row) => {
-      const byId = targetId && safeText(row.id) === targetId;
-      const byStaff = targetStaffId && normalizeId(row.staffId) === targetStaffId;
-      const byEmail = targetEmail && normalizeId(row.email) === targetEmail;
-      return byId || byStaff || byEmail;
-    }) || null;
-
-  if (!teacher) {
-    throw new Error("Teacher profile not found. Please sign in again.");
-  }
-
-  const teacherAssignments = dedupeBy(
-    (assignmentRows || [])
-      .filter((row) => safeText(row?.teacher_id || row?.teacherId) === safeText(teacher.id))
-      .map((row) => mapAssignmentRow(row, refs.subjectById))
-      .filter(Boolean),
-    (row) => `${normalizeId(row.className)}__${normalizeId(row.subject)}`
-  );
-
-  const allStudents = (studentRows || []).map((row) =>
-    mapStudentRow(row, refs.facultyMaps, refs.departmentMaps)
-  );
-
-  const students = allStudents.filter((student) => {
-    if (teacher.facultyId && student.facultyId) {
-      if (safeText(student.facultyId) !== safeText(teacher.facultyId)) return false;
-    } else if (teacher.faculty && student.faculty) {
-      if (normalizeId(student.faculty) !== normalizeId(teacher.faculty)) return false;
-    }
-
-    if (teacher.departmentId && student.departmentId) {
-      return safeText(student.departmentId) === safeText(teacher.departmentId);
-    }
-
-    if (teacher.department && student.department) {
-      return normalizeId(student.department) === normalizeId(teacher.department);
-    }
-
-    return true;
-  });
-
-  return {
-    teacher,
-    assignments: teacherAssignments,
-    students,
-  };
-};
-
-export const fetchAdminResultOverview = async ({ academicYear, semester }) => {
-  ensureBackend();
-  const refs = await buildResultRefs();
-  const [submissionRows, publicationRows, assignmentRows] = await Promise.all([
-    fetchMappedSubmissions({ academicYear, semester }),
-    readRows("result_publications"),
-    readRows("teacher_assignments"),
-  ]);
-
-  const mappedPublications = publicationRows.map((row) => mapPublicationRow({ row, refs }));
-
-  const facultyFromTeachers = refs.teacherList
-    .map((teacher) => ({ id: teacher.facultyId, name: teacher.faculty }))
-    .filter((row) => row.name);
-  const facultyFromSubmissions = submissionRows
-    .map((row) => ({ id: row.facultyId, name: row.faculty }))
-    .filter((row) => row.name);
-  const facultyCandidates = [...refs.facultyMaps.list, ...facultyFromTeachers, ...facultyFromSubmissions];
-
-  const faculties = dedupeBy(
-    facultyCandidates,
-    (row) => normalizeId(row.id || row.name)
-  ).sort((a, b) => a.name.localeCompare(b.name));
-
-  const assignmentByTeacher = new Map();
-  for (const row of assignmentRows || []) {
-    const teacherId = safeText(row?.teacher_id || row?.teacherId);
-    const mapped = mapAssignmentRow(row, refs.subjectById);
-    if (!teacherId || !mapped) continue;
-    if (!assignmentByTeacher.has(teacherId)) assignmentByTeacher.set(teacherId, []);
-    assignmentByTeacher.get(teacherId).push(mapped);
-  }
-
-  const summaries = faculties.map((facultyRow) => {
-    const teachersInFaculty = refs.teacherList.filter((teacher) => {
-      if (facultyRow.id && teacher.facultyId) {
-        return safeText(teacher.facultyId) === safeText(facultyRow.id);
-      }
-      return normalizeId(teacher.faculty) === normalizeId(facultyRow.name);
-    });
-
-    const requiredPairs = dedupeBy(
-      teachersInFaculty.flatMap((teacher) => assignmentByTeacher.get(teacher.id) || []),
-      (item) => `${normalizeId(item.className)}__${normalizeId(item.subject)}`
-    );
-
-    const statusList = [];
-    for (const pair of requiredPairs) {
-      const ca = submissionRows.find(
-        (row) =>
-          filterSubmissionByScope({
-            submission: row,
-            faculty: facultyRow.name,
-            facultyId: facultyRow.id,
-            academicYear,
-            semester,
-          }) &&
-          normalizeId(row.className) === normalizeId(pair.className) &&
-          normalizeId(row.subject) === normalizeId(pair.subject) &&
-          normalizeAssessmentType(row.assessmentType) === "CA"
-      );
-      const exam = submissionRows.find(
-        (row) =>
-          filterSubmissionByScope({
-            submission: row,
-            faculty: facultyRow.name,
-            facultyId: facultyRow.id,
-            academicYear,
-            semester,
-          }) &&
-          normalizeId(row.className) === normalizeId(pair.className) &&
-          normalizeId(row.subject) === normalizeId(pair.subject) &&
-          normalizeAssessmentType(row.assessmentType) === "EXAM"
-      );
-
-      statusList.push(ca?.status || "missing");
-      statusList.push(exam?.status || "missing");
-    }
-
-    const requiredComponents = requiredPairs.length * 2;
-    const approvedComponents = statusList.filter((item) => item === "approved").length;
-    const submittedComponents = statusList.filter((item) => item === "submitted").length;
-    const rejectedComponents = statusList.filter((item) => item === "rejected").length;
-    const missingComponents = statusList.filter((item) => item === "missing").length;
-    const canPublish =
-      requiredComponents > 0 && approvedComponents === requiredComponents && missingComponents === 0;
-
-    const published = mappedPublications.some((publication) =>
-      isPublicationMatch({
-        publication,
-        faculty: facultyRow.name,
-        facultyId: facultyRow.id,
-        academicYear,
-        semester,
-      })
-    );
-
-    return {
-      faculty: facultyRow.name,
-      facultyId: facultyRow.id || "",
-      requiredPairs: requiredPairs.length,
-      requiredComponents,
-      approvedComponents,
-      submittedComponents,
-      rejectedComponents,
-      missingComponents,
-      canPublish,
-      progressPercent:
-        requiredComponents === 0
-          ? 0
-          : Math.round((approvedComponents / requiredComponents) * 100),
-      published,
-    };
-  });
-
-  return {
-    faculties,
-    summaries,
-    submissions: submissionRows,
-  };
 };

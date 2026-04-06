@@ -36,21 +36,46 @@ const toResultMeta = (total) => {
 
 const buildPairRows = (caSubmission, examSubmission) => {
   const rowsByMatricule = {};
+  const toNumberOrNull = (value) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+  const pickPreferredMark = (current, next) => {
+    if (next === null || next === undefined) return current;
+    if (current === null || current === undefined) return next;
+    if (current === 0 && next > 0) return next;
+    if (next === 0 && current > 0) return current;
+    return next;
+  };
+  const buildRowKey = (row) => {
+    const matricule = String(row?.matricule || "").trim().toLowerCase();
+    if (matricule) return `mat:${matricule}`;
 
-  (caSubmission?.marks || []).forEach((row) => {
-    const key = String(row.matricule || row.studentId || "").toLowerCase();
+    const studentId = String(row?.studentId || "").trim().toLowerCase();
+    if (studentId) return `id:${studentId}`;
+
+    const name = String(row?.name || row?.studentName || "").trim().toLowerCase();
+    if (name) return `name:${name}`;
+
+    return "";
+  };
+
+  (caSubmission?.marks || []).forEach((row, index) => {
+    const key = buildRowKey(row) || `ca-${index}`;
     if (!key) return;
+    const current = rowsByMatricule[key];
+    const nextCa = toNumberOrNull(row.mark);
     rowsByMatricule[key] = {
-      matricule: row.matricule || "",
-      studentName: row.name || "Unnamed Student",
-      className: caSubmission.className,
-      ca: Number(row.mark),
-      exam: null,
+      matricule: row.matricule || current?.matricule || "",
+      studentName: row.name || current?.studentName || "Unnamed Student",
+      className: caSubmission.className || current?.className,
+      ca: pickPreferredMark(current?.ca ?? null, nextCa),
+      exam: current?.exam ?? null,
     };
   });
 
-  (examSubmission?.marks || []).forEach((row) => {
-    const key = String(row.matricule || row.studentId || "").toLowerCase();
+  (examSubmission?.marks || []).forEach((row, index) => {
+    const key = buildRowKey(row) || `exam-${index}`;
     if (!key) return;
     if (!rowsByMatricule[key]) {
       rowsByMatricule[key] = {
@@ -58,14 +83,14 @@ const buildPairRows = (caSubmission, examSubmission) => {
         studentName: row.name || "Unnamed Student",
         className: examSubmission.className,
         ca: null,
-        exam: Number(row.mark),
+        exam: toNumberOrNull(row.mark),
       };
       return;
     }
 
     rowsByMatricule[key] = {
       ...rowsByMatricule[key],
-      exam: Number(row.mark),
+      exam: pickPreferredMark(rowsByMatricule[key].exam, toNumberOrNull(row.mark)),
     };
   });
 
@@ -571,7 +596,10 @@ export default function Reports() {
               </thead>
               <tbody>
                 {pairRows.map((row) => (
-                  <tr key={row.matricule} className="border-b last:border-b-0">
+                  <tr
+                    key={`${row.matricule || row.studentName}-${row.className || "class"}`}
+                    className="border-b last:border-b-0"
+                  >
                     <td className="py-2 pr-3 font-semibold">{row.matricule}</td>
                     <td className="py-2 pr-3">{row.studentName}</td>
                     <td className="py-2 pr-3">{row.className}</td>

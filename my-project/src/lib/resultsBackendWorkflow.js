@@ -9,6 +9,53 @@ const MAX_BY_TYPE = {
 };
 
 const ENTRY_TABLE_CANDIDATES = ["result_entries", "result_submission_marks"];
+const ENTRY_FK_CANDIDATES = [
+  "submission_id",
+  "result_submission_id",
+  "submission",
+  "result_submission",
+  "submission_ref",
+  "report_id",
+];
+const MISSING_ENTRY_TABLES = new Set();
+let preferredEntryTable = "";
+
+const extractEntrySubmissionId = (row) => {
+  for (const fk of ENTRY_FK_CANDIDATES) {
+    const value = safeText(row?.[fk]);
+    if (value) return value;
+  }
+  return "";
+};
+
+const createSubmissionIdMatcher = (submissionIds = []) => {
+  const exact = new Set((submissionIds || []).map((id) => safeText(id)).filter(Boolean));
+  const normalized = new Set(Array.from(exact).map((id) => normalizeId(id)));
+
+  return (value) => {
+    const raw = safeText(value);
+    if (!raw) return false;
+    if (exact.has(raw)) return true;
+    return normalized.has(normalizeId(raw));
+  };
+};
+
+const resolveEntrySubmissionId = ({
+  row,
+  submissionIdMatcher = null,
+  preferredFk = "",
+}) => {
+  if (submissionIdMatcher) {
+    for (const fk of ENTRY_FK_CANDIDATES) {
+      const value = safeText(row?.[fk]);
+      if (value && submissionIdMatcher(value)) return value;
+    }
+  }
+
+  const preferredValue = safeText(row?.[preferredFk]);
+  if (preferredValue) return preferredValue;
+  return extractEntrySubmissionId(row);
+};
 
 const ensureBackend = () => {
   if (!isSupabaseConfigured || !supabase) {
@@ -74,16 +121,6 @@ const isStudentIdTypeMismatch = (error) => {
   const message = String(error?.message || "").toLowerCase();
   return (
     message.includes("student_id") &&
-    (message.includes("incompatible types") ||
-      message.includes("invalid input syntax for type uuid") ||
-      message.includes("invalid input syntax for type bigint"))
-  );
-};
-
-const isSubmissionIdTypeMismatch = (error) => {
-  const message = String(error?.message || "").toLowerCase();
-  return (
-    message.includes("submission_id") &&
     (message.includes("incompatible types") ||
       message.includes("invalid input syntax for type uuid") ||
       message.includes("invalid input syntax for type bigint"))
@@ -266,6 +303,28 @@ const buildPeriodMap = (rows) => {
     byId.set(id, { id, academicYear, semester, raw: row });
   }
   return byId;
+};
+
+const buildStudentMaps = (rows, facultyMaps, departmentMaps) => {
+  const byId = new Map();
+  const byMatricule = new Map();
+  const byName = new Map();
+  const list = [];
+
+  for (const row of rows || []) {
+    const mapped = mapStudentRow(row, facultyMaps, departmentMaps);
+    if (!mapped) continue;
+    const id = safeText(mapped.studentId);
+    const matriculeKey = normalizeId(mapped.matricule);
+    const nameKey = normalizeId(mapped.name);
+
+    if (id) byId.set(id, mapped);
+    if (matriculeKey) byMatricule.set(matriculeKey, mapped);
+    if (nameKey && !byName.has(nameKey)) byName.set(nameKey, mapped);
+    list.push(mapped);
+  }
+
+  return { byId, byMatricule, byName, list };
 };
 
 const mapTeacherRow = (row, facultyMaps, departmentMaps) => {
@@ -470,10 +529,69 @@ const resolveSubmissionForeignKeys = async ({
 
 const getEntryMark = (row, assessmentType) => {
   const type = normalizeAssessmentType(assessmentType);
-  if (type === "CA") {
-    return parseScore(row?.ca_score ?? row?.ca ?? row?.mark ?? row?.score);
+
+  const typedKeys =
+    type === "CA"
+      ? ["ca_score", "ca", "ca_mark", "continuous_assessment", "continuous_assessment_score"]
+      : ["exam_score", "exam", "exam_mark", "final_exam", "final_exam_score"];
+
+  const genericKeys = ["mark", "score", "marks", "value"];
+
+  const typedValues = [];
+  const genericValues = [];
+  for (const key of typedKeys) {
+    const mark = parseScore(row?.[key]);
+    if (mark !== null && mark >= 0 && mark <= 100) typedValues.push(mark);
   }
-  return parseScore(row?.exam_score ?? row?.exam ?? row?.mark ?? row?.score);
+  for (const key of genericKeys) {
+    const mark = parseScore(row?.[key]);
+    if (mark !== null && mark >= 0 && mark <= 100) genericValues.push(mark);
+  }
+
+  const typedPositive = typedValues.find((value) => value > 0);
+  if (typedPositive !== undefined) return typedPositive;
+
+  const genericPositive = genericValues.find((value) => value > 0);
+  if (genericPositive !== undefined) return genericPositive;
+
+  const typedZero = typedValues.find((value) => value === 0);
+  if (typedZero !== undefined) return typedZero;
+
+  if (genericValues.length > 0) return genericValues[0];
+
+  // Last-resort fallback for custom schemas: scan numeric score-like columns.
+  for (const [key, value] of Object.entries(row || {})) {
+    const normalizedKey = normalizeId(key);
+    if (!normalizedKey) continue;
+    if (
+      normalizedKey.includes("id") ||
+      normalizedKey.includes("year") ||
+      normalizedKey.includes("semester") ||
+      normalizedKey.includes("term") ||
+      normalizedKey.includes("level") ||
+      normalizedKey.includes("faculty") ||
+      normalizedKey.includes("department") ||
+      normalizedKey.includes("subject")
+    ) {
+      continue;
+    }
+
+    const scoreLike =
+      normalizedKey.includes("mark") ||
+      normalizedKey.includes("score") ||
+      normalizedKey.includes("exam") ||
+      normalizedKey.includes("ca");
+    if (!scoreLike) continue;
+    if (type === "CA" && normalizedKey.includes("exam")) continue;
+    if (type === "EXAM" && normalizedKey.includes("ca")) continue;
+
+    const parsed = parseScore(value);
+    if (parsed !== null && parsed >= 0 && parsed <= 100) {
+      return parsed;
+    }
+  }
+
+  return null;
 };
 
 const mapSubmissionRow = ({ row, refs, teacherById }) => {
@@ -579,42 +697,64 @@ const loadResultEntries = async (submissionIds) => {
   const combinedRows = [];
   let fallbackFk = "submission_id";
   let fallbackTable = "";
+  const submissionIdMatcher = createSubmissionIdMatcher(submissionIds);
+  const candidateTables = preferredEntryTable
+    ? [preferredEntryTable]
+    : ENTRY_TABLE_CANDIDATES.filter((table) => !MISSING_ENTRY_TABLES.has(table));
 
-  for (const table of ENTRY_TABLE_CANDIDATES) {
-    let tableReached = false;
-    for (const fk of ["submission_id", "result_submission_id"]) {
-      const { data, error } = await supabase.from(table).select("*").in(fk, submissionIds);
-      if (!error) {
-        tableReached = true;
-        if (!fallbackTable) {
-          fallbackTable = table;
-          fallbackFk = fk;
-        }
-
-        const rows = Array.isArray(data) ? data : [];
-        if (rows.length) {
-          combinedRows.push(...rows);
-        }
+  for (const table of candidateTables.length ? candidateTables : ENTRY_TABLE_CANDIDATES) {
+    let rows = [];
+    try {
+      rows = await readRows(table, { allowRlsBlock: true });
+    } catch (error) {
+      if (isMissingRelation(error)) {
+        MISSING_ENTRY_TABLES.add(table);
+        if (preferredEntryTable === table) preferredEntryTable = "";
         continue;
       }
-
-      if (isMissingRelation(error)) break;
-      if (isSubmissionIdTypeMismatch(error)) continue;
-      if (isMissingColumn(error)) continue;
-      throw toFriendlyResultsError(error, table);
+      throw error;
     }
 
-    if (tableReached && combinedRows.length > 0) {
-      // Keep checking other tables too, in case marks are split across schemas.
+    if (!Array.isArray(rows) || rows.length === 0) {
+      preferredEntryTable = preferredEntryTable || table;
       continue;
+    }
+
+    preferredEntryTable = table;
+
+    const presentFks = ENTRY_FK_CANDIDATES.filter((fk) =>
+      rows.some((row) => Object.prototype.hasOwnProperty.call(row || {}, fk))
+    );
+    const fksToCheck = presentFks.length ? presentFks : ENTRY_FK_CANDIDATES;
+
+    if (!fallbackTable) {
+      fallbackTable = table;
+      fallbackFk = fksToCheck[0] || "submission_id";
+    }
+
+    const matchedRows = rows.filter((row) => {
+      for (const fk of fksToCheck) {
+        const value = safeText(row?.[fk]);
+        if (value && submissionIdMatcher(value)) return true;
+      }
+      return false;
+    });
+
+    if (matchedRows.length) {
+      combinedRows.push(...matchedRows);
     }
   }
 
   const dedupedRows = dedupeBy(
     combinedRows,
     (row) =>
-      `${safeText(row?.id)}__${safeText(row?.submission_id || row?.result_submission_id)}__${safeText(
-        row?.student_matricule || row?.matricule || row?.student_id
+      `${safeText(row?.id)}__${extractEntrySubmissionId(row)}__${safeText(
+        row?.student_matricule ||
+          row?.matricule ||
+          row?.student_id ||
+          row?.student_name ||
+          row?.full_name ||
+          row?.name
       )}`
   );
 
@@ -626,12 +766,13 @@ const loadResultEntries = async (submissionIds) => {
 };
 
 const buildResultRefs = async () => {
-  const [facultyRows, departmentRows, subjectRows, teacherRows, periodRows] = await Promise.all([
+  const [facultyRows, departmentRows, subjectRows, teacherRows, periodRows, studentRows] = await Promise.all([
     readRows("faculties"),
     readRows("departments"),
     readRows("subjects"),
     readRows("teachers"),
     readRows("academic_periods", { allowRlsBlock: true }),
+    readRows("students"),
   ]);
 
   const facultyMaps = buildFacultyMaps(facultyRows);
@@ -642,6 +783,7 @@ const buildResultRefs = async () => {
     mapTeacherRow(row, facultyMaps, departmentMaps)
   );
   const teacherById = new Map(teacherList.map((teacher) => [teacher.id, teacher]));
+  const studentMaps = buildStudentMaps(studentRows, facultyMaps, departmentMaps);
 
   return {
     facultyMaps,
@@ -650,6 +792,9 @@ const buildResultRefs = async () => {
     periodById,
     teacherList,
     teacherById,
+    studentById: studentMaps.byId,
+    studentByMatricule: studentMaps.byMatricule,
+    studentByName: studentMaps.byName,
     periodRows,
   };
 };
@@ -677,40 +822,92 @@ const fetchMappedSubmissions = async ({
     );
 
   const submissionIds = mapped.map((item) => item.id).filter(Boolean);
+  const submissionIdMatcher = createSubmissionIdMatcher(submissionIds);
   const { rows: entryRows, fk: entryFk } = await loadResultEntries(submissionIds);
 
   const marksBySubmission = new Map();
   for (const row of entryRows || []) {
-    const submissionId = safeText(
-      row?.[entryFk] || row?.submission_id || row?.result_submission_id
-    );
+    const submissionId = resolveEntrySubmissionId({
+      row,
+      submissionIdMatcher,
+      preferredFk: entryFk,
+    });
     if (!submissionId) continue;
-    if (!marksBySubmission.has(submissionId)) marksBySubmission.set(submissionId, []);
-    marksBySubmission.get(submissionId).push(row);
+    const mapKey = normalizeId(submissionId);
+    if (!marksBySubmission.has(mapKey)) marksBySubmission.set(mapKey, []);
+    marksBySubmission.get(mapKey).push(row);
   }
 
   const withMarks = mapped.map((submission) => {
-    const sourceRows = marksBySubmission.get(submission.id) || [];
+    const sourceRows = marksBySubmission.get(normalizeId(submission.id)) || [];
     const marks = sourceRows
       .map((row) => {
         const mark = getEntryMark(row, submission.assessmentType);
-        if (mark === null) return null;
+        const studentId = safeText(row?.student_id);
+        const nameFromRow = safeText(row?.student_name || row?.full_name || row?.name);
+        const linkedStudentById = studentId ? refs.studentById.get(studentId) : null;
+        const linkedStudentByName =
+          !linkedStudentById && nameFromRow
+            ? refs.studentByName.get(normalizeId(nameFromRow))
+            : null;
+        const linkedStudent = linkedStudentById || linkedStudentByName || null;
+        const rawMatricule = safeText(row?.student_matricule || row?.matricule);
+        const matricule =
+          rawMatricule && normalizeId(rawMatricule) !== "unknown"
+            ? rawMatricule
+            : safeText(linkedStudent?.matricule);
+        const name =
+          nameFromRow ||
+          safeText(linkedStudent?.name) ||
+          "Student";
+
+        if (!matricule && !name && !studentId) return null;
         return {
-          studentId: safeText(row?.student_id),
-          matricule: safeText(row?.student_matricule || row?.matricule),
-          name: safeText(row?.student_name || row?.full_name || row?.name) || "Student",
+          studentId,
+          matricule,
+          name,
           faculty: safeText(row?.faculty),
           department: safeText(row?.department),
-          program: safeText(row?.program),
-          level: safeText(row?.level),
+          program: safeText(row?.program) || safeText(linkedStudent?.program),
+          level: safeText(row?.level) || safeText(linkedStudent?.level),
           mark,
         };
       })
       .filter(Boolean);
 
+    const dedupedMarksMap = new Map();
+    for (const markRow of marks) {
+      const key =
+        normalizeId(markRow.matricule) ||
+        normalizeId(markRow.studentId) ||
+        normalizeId(markRow.name);
+      if (!key) continue;
+
+      const current = dedupedMarksMap.get(key);
+      if (!current) {
+        dedupedMarksMap.set(key, markRow);
+        continue;
+      }
+
+      const currentMark = parseScore(current.mark);
+      const nextMark = parseScore(markRow.mark);
+      const currentScore =
+        (currentMark !== null ? 2 : 0) +
+        (currentMark !== null && currentMark > 0 ? 2 : 0) +
+        (safeText(current.matricule) ? 1 : 0) +
+        (safeText(current.name) ? 1 : 0);
+      const nextScore =
+        (nextMark !== null ? 2 : 0) +
+        (nextMark !== null && nextMark > 0 ? 2 : 0) +
+        (safeText(markRow.matricule) ? 1 : 0) +
+        (safeText(markRow.name) ? 1 : 0);
+
+      dedupedMarksMap.set(key, nextScore >= currentScore ? markRow : current);
+    }
+
     return {
       ...submission,
-      marks,
+      marks: Array.from(dedupedMarksMap.values()),
     };
   });
 
@@ -889,6 +1086,77 @@ const updateSubmissionStatusToSubmitted = async ({
   }
 
   throw new Error("Unable to update submission status. Check result_submissions columns.");
+};
+
+const syncSubmissionScopeFields = async ({
+  submissionId,
+  faculty = "",
+  facultyId = "",
+  department = "",
+  departmentId = "",
+  className = "",
+  subject = "",
+  subjectId = "",
+  academicYear = "",
+  semester = "",
+  periodId = "",
+}) => {
+  if (!submissionId) return;
+
+  const numericFacultyId = parseNumericId(facultyId);
+  const numericDepartmentId = parseNumericId(departmentId);
+  const numericSubjectId = parseNumericId(subjectId);
+  const numericPeriodId = parseNumericId(periodId);
+
+  const payloads = [
+    {
+      faculty_id: numericFacultyId || safeText(facultyId) || null,
+      department_id: numericDepartmentId || safeText(departmentId) || null,
+      subject_id: numericSubjectId || safeText(subjectId) || null,
+      class_name: className || null,
+      subject: subject || null,
+      academic_year: academicYear || null,
+      semester: normalizeSemester(semester) || null,
+      academic_period_id: numericPeriodId || safeText(periodId) || null,
+      updated_at: toIsoNow(),
+    },
+    {
+      faculty_id: numericFacultyId || safeText(facultyId) || null,
+      department_id: numericDepartmentId || safeText(departmentId) || null,
+      subject_id: numericSubjectId || safeText(subjectId) || null,
+      class_name: className || null,
+      subject_name: subject || null,
+      year: academicYear || null,
+      term: normalizeSemester(semester) || null,
+      period_id: numericPeriodId || safeText(periodId) || null,
+      updated_at: toIsoNow(),
+    },
+    {
+      faculty: faculty || null,
+      department: department || null,
+      class_name: className || null,
+      subject: subject || null,
+      academic_year: academicYear || null,
+      semester: normalizeSemester(semester) || null,
+      updated_at: toIsoNow(),
+    },
+    {
+      faculty: faculty || null,
+      department: department || null,
+      class: className || null,
+      subject_name: subject || null,
+      year: academicYear || null,
+      term: normalizeSemester(semester) || null,
+      updated_at: toIsoNow(),
+    },
+  ];
+
+  for (const payload of payloads) {
+    const { error } = await supabase.from("result_submissions").update(payload).eq("id", submissionId);
+    if (!error) return;
+    if (isMissingColumn(error)) continue;
+    if (isRlsViolation(error)) return;
+  }
 };
 
 const insertSubmissionRecord = async ({
@@ -1242,22 +1510,42 @@ const insertSubmissionRecord = async ({
 };
 
 const resolveEntriesTable = async () => {
-  for (const table of ENTRY_TABLE_CANDIDATES) {
+  const candidateTables = preferredEntryTable
+    ? [preferredEntryTable]
+    : ENTRY_TABLE_CANDIDATES.filter((table) => !MISSING_ENTRY_TABLES.has(table));
+
+  for (const table of candidateTables.length ? candidateTables : ENTRY_TABLE_CANDIDATES) {
     const { error } = await supabase.from(table).select("*").limit(1);
-    if (!error) return table;
-    if (isMissingRelation(error)) continue;
+    if (!error) {
+      preferredEntryTable = table;
+      return table;
+    }
+    if (isMissingRelation(error)) {
+      MISSING_ENTRY_TABLES.add(table);
+      if (preferredEntryTable === table) preferredEntryTable = "";
+      continue;
+    }
     throw toFriendlyResultsError(error, table);
   }
   throw new Error("Neither result_entries nor result_submission_marks table exists.");
 };
 
 const deleteEntriesForSubmission = async (table, submissionId) => {
-  for (const fk of ["submission_id", "result_submission_id"]) {
+  let deletedAnyPath = false;
+  let checkedAnyPath = false;
+
+  for (const fk of ENTRY_FK_CANDIDATES) {
     const { error } = await supabase.from(table).delete().eq(fk, submissionId);
-    if (!error) return;
+    if (!error) {
+      deletedAnyPath = true;
+      checkedAnyPath = true;
+      continue;
+    }
     if (isMissingColumn(error)) continue;
     throw toFriendlyResultsError(error, table);
   }
+
+  if (checkedAnyPath || deletedAnyPath) return;
   throw new Error(`Unable to clear old entries in ${table}. Missing submission foreign key.`);
 };
 
@@ -1304,6 +1592,11 @@ const insertEntriesRows = async ({
   const payloadSets = [
     rows.map((row) => ({
       submission_id: submissionId,
+      submission_ref: submissionId,
+      report_id: submissionId,
+      submission: submissionId,
+      result_submission: submissionId,
+      result_submission_id: submissionId,
       student_id: parseNumericId(row.studentId) || row.studentId || null,
       student_matricule: row.matricule,
       student_name: row.studentName,
@@ -1320,6 +1613,11 @@ const insertEntriesRows = async ({
     })),
     rows.map((row) => ({
       submission_id: submissionId,
+      submission_ref: submissionId,
+      report_id: submissionId,
+      submission: submissionId,
+      result_submission: submissionId,
+      result_submission_id: submissionId,
       student_id: parseNumericId(row.studentId) || row.studentId || null,
       matricule: row.matricule,
       student_name: row.studentName,
@@ -1336,6 +1634,11 @@ const insertEntriesRows = async ({
     })),
     rows.map((row) => ({
       submission_id: submissionId,
+      submission_ref: submissionId,
+      report_id: submissionId,
+      submission: submissionId,
+      result_submission: submissionId,
+      result_submission_id: submissionId,
       student_id: parseNumericId(row.studentId) || row.studentId || null,
       matricule: row.matricule,
       student_name: row.studentName,
@@ -1353,6 +1656,11 @@ const insertEntriesRows = async ({
     })),
     rows.map((row) => ({
       result_submission_id: submissionId,
+      submission_id: submissionId,
+      submission_ref: submissionId,
+      report_id: submissionId,
+      submission: submissionId,
+      result_submission: submissionId,
       student_id: parseNumericId(row.studentId) || row.studentId || null,
       matricule: row.matricule,
       student_name: row.studentName,
@@ -1368,18 +1676,33 @@ const insertEntriesRows = async ({
     })),
     rows.map((row) => ({
       result_submission_id: submissionId,
+      submission_id: submissionId,
+      submission_ref: submissionId,
+      report_id: submissionId,
+      submission: submissionId,
+      result_submission: submissionId,
       student_matricule: row.matricule,
       student_name: row.studentName,
       mark: row.mark,
     })),
     rows.map((row) => ({
       submission_id: submissionId,
+      submission_ref: submissionId,
+      report_id: submissionId,
+      submission: submissionId,
+      result_submission: submissionId,
+      result_submission_id: submissionId,
       student_matricule: row.matricule,
       student_name: row.studentName,
       mark: row.mark,
     })),
     rows.map((row) => ({
       submission_id: submissionId,
+      submission_ref: submissionId,
+      report_id: submissionId,
+      submission: submissionId,
+      result_submission: submissionId,
+      result_submission_id: submissionId,
       matricule: row.matricule,
       student_name: row.studentName,
       score: row.mark,
@@ -1414,17 +1737,17 @@ const insertEntriesRows = async ({
         case "mark":
         case "score": {
           const parsed = parseScore(row.mark ?? row.score ?? row.ca_score ?? row.exam_score);
-          fallback = parsed === null ? 0 : parsed;
+          fallback = parsed === null ? undefined : parsed;
           break;
         }
         case "ca_score": {
           const parsed = parseScore(row.mark ?? row.score ?? row.ca_score);
-          fallback = type === "CA" ? (parsed === null ? 0 : parsed) : 0;
+          fallback = type === "CA" ? (parsed === null ? undefined : parsed) : 0;
           break;
         }
         case "exam_score": {
           const parsed = parseScore(row.mark ?? row.score ?? row.exam_score);
-          fallback = type === "EXAM" ? (parsed === null ? 0 : parsed) : 0;
+          fallback = type === "EXAM" ? (parsed === null ? undefined : parsed) : 0;
           break;
         }
         case "assessment_type":
@@ -1602,6 +1925,7 @@ export const saveResultSubmission = async ({
   });
 
   let submissionId = existing?.id || "";
+  let statusSyncedToSubmitted = false;
 
   if (submissionId) {
     await updateSubmissionStatusToSubmitted({
@@ -1611,6 +1935,7 @@ export const saveResultSubmission = async ({
       teacherStaffId,
       now,
     });
+    statusSyncedToSubmitted = true;
   } else {
     submissionId = await insertSubmissionRecord({
       faculty,
@@ -1668,6 +1993,32 @@ export const saveResultSubmission = async ({
 
   if (!submissionId) {
     throw new Error("Unable to resolve submission row. Check unique constraints in result_submissions.");
+  }
+
+  await syncSubmissionScopeFields({
+    submissionId,
+    faculty,
+    facultyId: effectiveFacultyId,
+    department,
+    departmentId: effectiveDepartmentId,
+    className,
+    subject,
+    subjectId: effectiveSubjectId,
+    academicYear: period.academicYear,
+    semester: period.semester,
+    periodId: period.id,
+  });
+
+  // If we resolved an existing row after insert fallback (for example duplicate keys),
+  // ensure admin sees it as a fresh teacher submission.
+  if (!statusSyncedToSubmitted) {
+    await updateSubmissionStatusToSubmitted({
+      submissionId,
+      teacherId,
+      teacherName,
+      teacherStaffId,
+      now,
+    });
   }
 
   const entriesTable = await resolveEntriesTable();

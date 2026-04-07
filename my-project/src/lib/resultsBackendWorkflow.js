@@ -1548,9 +1548,7 @@ const deleteEntriesForSubmission = async (table, submissionId) => {
   if (checkedAnyPath || deletedAnyPath) return;
   throw new Error(`Unable to clear old entries in ${table}. Missing submission foreign key.`);
 };
-
 const insertEntriesRows = async ({
-
   table,
   submissionId,
   marks,
@@ -1573,11 +1571,9 @@ const insertEntriesRows = async ({
         if (mark === null) return null;
 
         return {
-          studentId: safeText(row?.studentId || row?.student_id),
-          matricule: safeText(row?.matricule || row?.student_matricule),
-          studentName: safeText(
-            row?.name || row?.studentName || row?.student_name || row?.full_name
-          ),
+          studentId: safeText(row?.studentId),
+          matricule: safeText(row?.matricule),
+          studentName: safeText(row?.name || row?.studentName || row?.full_name),
           program: safeText(row?.program),
           level: safeText(row?.level),
           facultyId: safeText(row?.facultyId || row?.faculty_id),
@@ -1585,8 +1581,8 @@ const insertEntriesRows = async ({
           mark,
         };
       })
-      .filter((row) => row && (row.matricule || row.studentId || row.studentName)),
-    (row) => normalizeId(row.matricule || row.studentId || row.studentName)
+      .filter((row) => row && row.matricule && row.studentName),
+    (row) => normalizeId(row.matricule || row.studentId)
   );
 
   if (rows.length === 0) {
@@ -1602,9 +1598,9 @@ const insertEntriesRows = async ({
     result_submission: submissionId,
 
     student_id: parseNumericId(row.studentId) || row.studentId || null,
-    student_matricule: row.matricule || "UNKNOWN",
-    matricule: row.matricule || "UNKNOWN",
-    student_name: row.studentName || "Student",
+    student_matricule: row.matricule,
+    matricule: row.matricule,
+    student_name: row.studentName,
 
     faculty: faculty || null,
     department: department || null,
@@ -1620,11 +1616,11 @@ const insertEntriesRows = async ({
 
     ca_score: type === "CA" ? row.mark : null,
     exam_score: type === "EXAM" ? row.mark : null,
-    final_score: null,
-    remark: null,
-
     mark: row.mark,
     score: row.mark,
+
+    final_score: null,
+    remark: null,
   }));
 
   const withRequiredFallbacks = (rowsInput, requiredColumn) => {
@@ -1639,7 +1635,6 @@ const insertEntriesRows = async ({
       }
 
       let fallback;
-
       switch (requiredColumn) {
         case "submission_id":
         case "result_submission_id":
@@ -1663,9 +1658,7 @@ const insertEntriesRows = async ({
 
         case "mark":
         case "score": {
-          const parsed = parseScore(
-            row.mark ?? row.score ?? row.ca_score ?? row.exam_score
-          );
+          const parsed = parseScore(row.mark ?? row.score ?? row.ca_score ?? row.exam_score);
           fallback = parsed === null ? undefined : parsed;
           break;
         }
@@ -1704,6 +1697,14 @@ const insertEntriesRows = async ({
           fallback = row.department_id || normalizedDepartmentId || null;
           break;
 
+        case "program":
+          fallback = row.program || null;
+          break;
+
+        case "level":
+          fallback = row.level || null;
+          break;
+
         case "class_name":
         case "class":
           fallback = className || null;
@@ -1735,9 +1736,8 @@ const insertEntriesRows = async ({
 
   let lastError = null;
 
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 24; attempt += 1) {
     const { error } = await supabase.from(table).insert(candidateRows);
-
     if (!error) return;
 
     if (isStudentIdTypeMismatch(error)) {

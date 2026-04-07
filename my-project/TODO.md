@@ -1,15 +1,12 @@
-# TODO - Fix Errors in Students.jsx and Teachers.jsx
+# Progress Report TODO
 
-## Teachers.jsx Fixes:
-- [ ] 1. Add missing state variables (selectedTeacher, showEditModal, showDeleteModal)
-- [ ] 2. Add onClick handlers for Edit, Add Course, and Delete buttons
-- [ ] 3. Add Edit modal with form fields
-- [ ] 4. Add Delete confirmation modal
-- [ ] 5. Wire handleEditSubmit to update database
-- [ ] 6. Wire handleDelete to delete from database
+## Current Task: Fix syntax error in resultsBackendWorkflow.js
 
-## Students.jsx Fixes:
-- [ ] 1. Add proper edit modal with form fields
-- [ ] 2. Add Delete confirmation modal
-- [ ] 3. Wire handleEditSubmit to update database
-- [ ] 4. Wire handleDelete to delete from database
+### Steps:
+- [x] 1. Identify error (syntax in insertEntriesRows).
+- [x] 2. Propose edit plan and get approval.
+- [x] 3. Edit the file.
+- [x] 4. Verify no syntax errors (lint/test).
+- [x] 5. Complete task.
+
+
